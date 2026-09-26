@@ -35,6 +35,7 @@ import type { ChildRuntimeConfig } from "./child-runtime-config.ts";
 import { createCapturedChildHooks, withChildSessionErrorReporting } from "./child-hooks.ts";
 import type { ChildTranscriptWriter } from "../../shared/child-transcript.ts";
 import type { ChildSessionLaunch, ChildSessionStorage } from "./child-session.ts";
+import { verifyResolvedChildProfileResources, type ResolvedChildProfileV1 } from "../../shared/child-profile.ts";
 import { resolveRequiredChildExtensions, type RequiredChildExtensionSnapshot } from "../../shared/required-child-extensions.ts";
 
 /** Environment variable pi-mcp-adapter reads for the tools a child may expose. */
@@ -107,6 +108,7 @@ export interface BuildInProcessChildLaunchInput {
 	allowNestedSubagents?: boolean;
 	descendantAllowedAgents?: string[];
 	capabilityCeiling?: ResolvedSubagentCapabilityCeiling;
+	resolvedChildProfile?: ResolvedChildProfileV1;
 	thinkingCeiling?: ThinkingLevel;
 	maxSubagentDepth?: number;
 	runtimeSnapshotHost?: McpRuntimeSnapshotHost;
@@ -181,6 +183,17 @@ function childStorage(input: BuildInProcessChildLaunchInput): ChildSessionStorag
 }
 
 export function buildInProcessChildLaunch(input: BuildInProcessChildLaunchInput): InProcessChildLaunch {
+	if (input.resolvedChildProfile) {
+		const profile = input.resolvedChildProfile;
+		verifyResolvedChildProfileResources(profile);
+		if (profile.isolation === "process" && input.host !== "runner") throw new Error(`Child profile '${profile.name}' requires process isolation; launch with async:true.`);
+		const profileTools = profile.resources.tools.map(({ name }) => name);
+		if (JSON.stringify(input.tools ?? []) !== JSON.stringify(profileTools)) throw new Error(`Child profile '${profile.name}' tool snapshot does not match the effective child launch.`);
+		const profileExtensions = profile.resources.extensions.map(({ path }) => path);
+		if (JSON.stringify(input.extensions ?? []) !== JSON.stringify(profileExtensions) || (input.subagentOnlyExtensions?.length ?? 0) > 0) throw new Error(`Child profile '${profile.name}' extension snapshot does not match the effective child launch.`);
+		if (input.inheritSkills) throw new Error(`Child profile '${profile.name}' cannot enable ambient skill inheritance.`);
+		if (input.inheritProjectContext !== profile.context.project || input.inheritGlobalContext !== profile.context.global) throw new Error(`Child profile '${profile.name}' context snapshot does not match the effective child launch.`);
+	}
 	const requiredExtensions = input.requiredExtensions ?? input.inherited?.requiredExtensions ?? resolveRequiredChildExtensions(input.parentSessionId);
 	const agentCapabilityCeiling: ResolvedSubagentCapabilityCeiling | undefined = input.descendantAllowedAgents === undefined
 		? undefined
@@ -209,6 +222,12 @@ export function buildInProcessChildLaunch(input: BuildInProcessChildLaunchInput)
 		runtimeSnapshotHost: input.runtimeSnapshotHost,
 	});
 	toolPlan.capabilityCeiling = intersectSubagentCapabilityCeilings(toolPlan.capabilityCeiling, agentCapabilityCeiling);
+	if (input.resolvedChildProfile) {
+		const requested = input.resolvedChildProfile.resources.tools.map(({ name }) => name);
+		const removed = requested.filter((tool) => !toolPlan.effectiveToolAllowlist.includes(tool));
+		if (removed.length > 0) throw new Error(`Child profile '${input.resolvedChildProfile.name}' conflicts with the effective capability ceiling; denied tools: ${removed.join(", ")}.`);
+		if (input.resolvedChildProfile.resources.extensions.length > 0 && toolPlan.capabilityCeiling?.denyExtensions) throw new Error(`Child profile '${input.resolvedChildProfile.name}' selects extensions but the effective capability ceiling denies extensions.`);
+	}
 	if (toolPlan.capabilityAudit && toolPlan.capabilityCeiling) {
 		toolPlan.capabilityAudit = { ...toolPlan.capabilityAudit, ceiling: toolPlan.capabilityCeiling };
 	}
@@ -320,10 +339,12 @@ export function buildInProcessChildLaunch(input: BuildInProcessChildLaunchInput)
 		extensionPaths,
 		requiredExtensions: toolPlan.requiredExtensions,
 		ambientExtensions,
+		skillPaths: input.resolvedChildProfile?.resources.skills.map(({ path }) => path) ?? [],
+		resolvedChildProfile: input.resolvedChildProfile,
 		hooks: capturedHooks.hooks,
 		...(input.host === "runner" ? { processEnv: childProcessEnv(input, toolPlan) } : {}),
 		runtime: config,
-		noSkills: !input.inheritSkills,
+		noSkills: input.resolvedChildProfile !== undefined || !input.inheritSkills,
 		noContextFiles: !input.inheritProjectContext,
 		...(taggedPrompt !== undefined
 			? input.systemPromptMode === "replace" ? { systemPrompt: taggedPrompt } : { appendSystemPrompt: taggedPrompt }

@@ -19,6 +19,7 @@ import { PI_CODING_AGENT_PACKAGE, resolveInstalledPiPackageRoot, resolvePiPackag
 import type { ChildRuntimeConfig } from "./child-runtime-config.ts";
 import type { RequiredChildExtensionSnapshot } from "../../shared/required-child-extensions.ts";
 import type { HerdrMachineReference, HerdrRemoteGitStatus } from "../../shared/types.ts";
+import type { ResolvedChildProfileV1 } from "../../shared/child-profile.ts";
 
 export interface ChildSessionEvent {
 	type: string;
@@ -75,6 +76,10 @@ export interface ChildSessionLaunch {
 	 */
 	ambientExtensions: boolean;
 	hooks: ChildHookExtension[];
+	/** Exact additional skills loaded even when ambient skill discovery is disabled. */
+	skillPaths?: string[];
+	/** Immutable launch evidence; the loader consumes paths, status consumes identity. */
+	resolvedChildProfile?: ResolvedChildProfileV1;
 	noSkills: boolean;
 	noContextFiles: boolean;
 	systemPrompt?: string;
@@ -249,6 +254,20 @@ function flushQueuedProviderRegistrations(loader: InstanceType<PiCodingAgentModu
  * its manifest, package identity, entry, and import must all succeed; the bare
  * specifier is used only when no root resolves.
  */
+export function filterResolvedChildProfileContextFiles(
+	base: { agentsFiles: Array<{ path: string; content: string }> },
+	profile: ResolvedChildProfileV1,
+	agentDir: string,
+): { agentsFiles: Array<{ path: string; content: string }> } {
+	const canonicalAgentDir = path.resolve(agentDir);
+	return {
+		agentsFiles: base.agentsFiles.filter((file) => {
+			const isGlobal = path.dirname(path.resolve(file.path)) === canonicalAgentDir;
+			return isGlobal ? profile.context.global : profile.context.project;
+		}),
+	};
+}
+
 export async function loadHostPiCodingAgent(): Promise<PiCodingAgentModule> {
 	const overrideRoot = process.env[PI_CODING_AGENT_PACKAGE_ROOT_ENV]?.trim() || undefined;
 	const runningRoot = resolvePiPackageRoot();
@@ -327,8 +346,10 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 				noThemes: true,
 				noContextFiles: launch.noContextFiles,
 				additionalExtensionPaths: launch.extensionPaths,
+				additionalSkillPaths: launch.skillPaths,
 				extensionFactories: launch.hooks,
 				extensionsOverride: prioritizeChildPromptRuntime,
+				...(launch.resolvedChildProfile ? { agentsFilesOverride: (base) => filterResolvedChildProfileContextFiles(base, launch.resolvedChildProfile!, agentDir) } : {}),
 				...(launch.systemPrompt !== undefined ? { systemPrompt: launch.systemPrompt } : {}),
 				...(launch.appendSystemPrompt !== undefined ? { appendSystemPrompt: [launch.appendSystemPrompt] } : {}),
 			});

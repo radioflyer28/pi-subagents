@@ -58,6 +58,7 @@ import { acceptanceHasTypedVerify, normalizeGateAcceptance, resolveAcceptanceRep
 import { canPreferFork, createForkContextResolver, resolveSubagentLaunchContext } from "../../shared/fork-context.ts";
 import { createPrunedForkSessionWriter } from "../../shared/pruned-fork.ts";
 import { resolveCurrentSessionId } from "../../shared/session-identity.ts";
+import { applyResolvedChildProfile, resolveChildProfileReference, type ResolvedChildProfileV1 } from "../../shared/child-profile.ts";
 import { currentCompletionOwnerId } from "../../shared/completion-owner.ts";
 import { SUBAGENT_ASYNC_COMPLETE_EVENT } from "../../shared/types.ts";
 import { applyIntercomBridgeToAgent, INTERCOM_BRIDGE_MARKER, resolveIntercomBridge, resolveIntercomSessionTarget, resolveSubagentIntercomTarget, type IntercomBridgeState } from "../../intercom/intercom-bridge.ts";
@@ -396,6 +397,10 @@ export interface SubagentParamsLike {
 	maxOutput?: MaxOutputConfig;
 	artifacts?: boolean;
 	includeProgress?: boolean;
+	/** Named child launch profile; resolved before child creation. */
+	profile?: string;
+	/** Immutable provider result retained through foreground/background launch. */
+	resolvedChildProfile?: ResolvedChildProfileV1;
 	model?: string;
 	/** Internal recovery provenance for a resolved model override. */
 	modelOrigin?: ModelOrigin;
@@ -2125,7 +2130,18 @@ async function resumeAsyncRun(input: {
 		return { content: [{ type: "text", text: `Nested child '${target.runId}' is missing its required recovery identity. Start a new run instead.` }], isError: true, details: { mode: "management", results: [] } };
 	}
 	const recoveryAgentConfig = recoveryDescriptor ? applySteeringRecoveryAgentConfig(baseAgentConfig, recoveryDescriptor) : baseAgentConfig;
-	const agentConfig = intercomBridge.active ? applyIntercomBridgeToAgent(recoveryAgentConfig, intercomBridge) : recoveryAgentConfig;
+	const recoveryCapabilityCeiling = intersectSubagentCapabilityCeilings(
+		recoveryDescriptor?.capabilityCeiling ?? (target.source === "foreground" || (target.source === "async" && target.mode === "workflow") ? target.capabilityCeiling : undefined),
+		resolveCurrentSubagentCapabilityCeiling(input.deps.state.currentSessionId),
+	);
+	let agentConfig = intercomBridge.active ? applyIntercomBridgeToAgent(recoveryAgentConfig, intercomBridge) : recoveryAgentConfig;
+	if (recoveryDescriptor?.resolvedChildProfile) {
+		try {
+			agentConfig = applyResolvedChildProfile({ agent: agentConfig, profile: recoveryDescriptor.resolvedChildProfile, backend: "process", capabilityCeiling: recoveryCapabilityCeiling });
+		} catch (error) {
+			return { content: [{ type: "text", text: `Cannot resume child profile '${recoveryDescriptor.resolvedChildProfile.name}': ${error instanceof Error ? error.message : String(error)}` }], isError: true, details: { mode: "management", results: [] } };
+		}
+	}
 	const foregroundContract = target.source === "foreground" ? target.resumeContract : undefined;
 	const outputSchema = Object.hasOwn(input.params, "outputSchema")
 		? input.params.outputSchema
@@ -2213,6 +2229,7 @@ async function resumeAsyncRun(input: {
 		thinkingCeiling: recoveryDescriptor?.thinkingCeiling ?? ("thinkingCeiling" in target ? target.thinkingCeiling : undefined),
 		extensionBindings: recoveryDescriptor?.extensionBindings ?? ("extensionBindings" in target ? target.extensionBindings : undefined),
 		requiredExtensions: recoveryDescriptor?.requiredExtensions ?? (target as { requiredExtensions?: SteeringRecoveryDescriptor["requiredExtensions"] }).requiredExtensions,
+		resolvedChildProfile: recoveryDescriptor?.resolvedChildProfile,
 		outputBaseDir: resolveSingleRunOutputBaseDir(input.deps, artifactsDir, runId),
 		maxSubagentDepth: recoveryDescriptor?.maxSubagentDepth ?? resolveCurrentMaxSubagentDepth(input.deps.config.maxSubagentDepth, input.deps.childRuntime),
 		waitToolEnabled: input.deps.waitToolEnabled,
@@ -2244,7 +2261,7 @@ async function resumeAsyncRun(input: {
 		...(input.params.toolBudget !== undefined ? { toolBudget: input.params.toolBudget } : {}),
 		// Recovery descriptors, remembered foreground runs, and current workflow roots
 		// preserve parent authority before the selected agent's descendant ceiling.
-		capabilityCeiling: intersectSubagentCapabilityCeilings(recoveryDescriptor?.capabilityCeiling ?? (target.source === "foreground" || (target.source === "async" && target.mode === "workflow") ? target.capabilityCeiling : undefined), resolveCurrentSubagentCapabilityCeiling(input.deps.state.currentSessionId)),
+		capabilityCeiling: recoveryCapabilityCeiling,
 		runFanoutBudget: input.params.runFanoutBudget ?? recoveryDescriptor?.runFanoutBudget ?? createRunFanoutBudget(runId, resolveMaxSubagentSpawnsPerRun(input.deps.config.maxSubagentSpawnsPerRun)),
 		parentWorkflowRunId: input.params.workflowParentRunId,
 		workflowKey: input.params.workflowKey,
@@ -3492,6 +3509,7 @@ async function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 			goal: params.task ?? "",
 			agentConfig: a,
 			recoveryAgentConfig: data.recoveryAgents.find((agent) => agent.name === params.agent),
+			resolvedChildProfile: params.resolvedChildProfile,
 			ctx: asyncCtx,
 			availableModels,
 			cwd: effectiveCwd,
@@ -4233,6 +4251,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 			toolBudget: effectiveToolBudget.toolBudget,
 			usageBudget: data.usageBudget ?? data.inheritedUsageBudget,
 			capabilityCeiling: data.capabilityCeiling,
+			resolvedChildProfile: params.resolvedChildProfile,
 			allowZeroToolBudget: data.allowZeroToolBudget && effectiveToolBudget.toolBudget === data.toolBudget,
 		}));
 		r = launched.detached && detachedWorkflowChild ? await detachedWorkflowChild : launched;
@@ -7134,7 +7153,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 				: contextPolicy.usesFork ? "fork" : undefined,
 			orchestratorTarget: sessionName,
 		});
-		const agents = applyScopedIntercomBridgeToAgents(discoveredAgents, intercomBridge, contextPolicy);
+		let agents = applyScopedIntercomBridgeToAgents(discoveredAgents, intercomBridge, contextPolicy);
 		const inheritedNestedRouteValue = inheritedNestedRoute(deps);
 		const nestedParentAddress = inheritedNestedRouteValue ? inheritedNestedParentAddress(deps) : undefined;
 		const shareEnabled = effectiveParams.share === true;
@@ -7221,6 +7240,29 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		const requestedAsync = externalAsyncRequired ? true : effectiveParams.async ?? deps.asyncByDefault;
 		const backgroundRequestedWhileClarifying = (hasChain || hasTasks) && requestedAsync && effectiveParams.clarify === true;
 		const effectiveAsync = requestedAsync && effectiveParams.clarify !== true;
+		if (effectiveParams.profile !== undefined) {
+			if (!hasSingle) return buildRequestedModeError(effectiveParams, "The child profile prototype supports one-child launches only; set profile on each runs.run child.");
+			if (effectiveParams.skill !== undefined) return buildRequestedModeError(effectiveParams, "A child profile owns the exact skill set; per-run skill overrides are not supported.");
+			if (effectiveParams.model !== undefined) return buildRequestedModeError(effectiveParams, "A child profile owns model selection when declared; per-run model overrides are not supported.");
+			try {
+				const resolvedChildProfile = await resolveChildProfileReference(effectiveParams.profile, {
+					cwd: effectiveCwd,
+					backend: effectiveAsync ? "process" : "session",
+				});
+				const selected = new Set(selectedAgentNames);
+				agents = agents.map((agent) => selected.has(agent.name)
+					? applyResolvedChildProfile({
+						agent,
+						profile: resolvedChildProfile,
+						backend: effectiveAsync ? "process" : "session",
+						capabilityCeiling: launchCapabilityCeiling(),
+					})
+					: agent);
+				effectiveParams = { ...effectiveParams, resolvedChildProfile };
+			} catch (error) {
+				return buildRequestedModeError(effectiveParams, error instanceof Error ? error.message : String(error));
+			}
+		}
 		if (externalAgent && (!effectiveAsync || effectiveParams.foregroundOnly === true)) {
 			return buildRequestedModeError(effectiveParams, `Agent '${externalAgent.name}' uses runner.type='${externalAgent.runner?.type}', which currently supports async/background execution only. Omit async or pass async:true; clarify and foregroundOnly are unsupported.`);
 		}

@@ -105,6 +105,7 @@ export interface LaunchBindingInput {
 	outputMode?: string;
 	structuredOutputSchema?: unknown;
 	extensionBindings?: ExtensionBindings;
+	resolvedChildProfileDigest?: string;
 }
 
 /** Canonical projection of the resolved inputs handed to the child. */
@@ -131,6 +132,7 @@ export function projectLaunchBinding(input: LaunchBindingInput): Record<string, 
 		outputMode: input.outputMode,
 		structuredOutputSchema: input.structuredOutputSchema,
 		extensionBindings: input.extensionBindings,
+		resolvedChildProfileDigest: input.resolvedChildProfileDigest,
 	};
 }
 
@@ -149,7 +151,7 @@ export type LaunchBindingIdentity =
 	| ({ definitionDigest: string } & LaunchBindingPromptMode);
 
 export type LaunchBindingSource = LaunchBindingIdentity
-	& Pick<LaunchBindingInput, "fast" | "thinking" | "skills" | "outputPath" | "outputMode" | "structuredOutputSchema" | "extensionBindings">
+	& Pick<LaunchBindingInput, "fast" | "thinking" | "skills" | "outputPath" | "outputMode" | "structuredOutputSchema" | "extensionBindings" | "resolvedChildProfileDigest">
 	& {
 		task: string;
 		model?: string;
@@ -193,6 +195,7 @@ export function resolveLaunchBinding(source: LaunchBindingSource): LaunchBinding
 			outputMode: source.outputMode,
 			structuredOutputSchema: source.structuredOutputSchema,
 			extensionBindings: source.extensionBindings || undefined,
+			resolvedChildProfileDigest: source.resolvedChildProfileDigest,
 		}),
 	};
 }

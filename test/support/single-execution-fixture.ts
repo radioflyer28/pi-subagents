@@ -27,6 +27,7 @@ import {
 import type { ChildWatchdogProgress, SubagentState } from "../../src/shared/types.ts";
 import { CHILD_WATCHDOG_STATUS_EVENT } from "../../src/watchdog/child-status.ts";
 import type { ChildRuntimeConfig } from "../../src/runs/shared/child-runtime-config.ts";
+import type { ResolvedChildProfileV1 } from "../../src/shared/child-profile.ts";
 
 interface ProgressSummary {
 	agent: string;
@@ -121,7 +122,7 @@ interface MockPiCallRecord {
 	cwd?: string;
 	systemPrompts?: Array<{ mode?: string; path?: string; text?: string; error?: string }>;
 	/** In-process child session launch (foreground children). */
-	launch?: { cwd: string; storage: { kind: string; sessionFile?: string; sessionDir?: string }; model?: string; tools?: string[]; excludeTools?: string[]; extensionPaths: string[]; hooks: string[]; noSkills: boolean; noContextFiles: boolean };
+	launch?: { cwd: string; storage: { kind: string; sessionFile?: string; sessionDir?: string }; model?: string; tools?: string[]; excludeTools?: string[]; extensionPaths: string[]; ambientExtensions?: boolean; hooks: string[]; skillPaths?: string[]; resolvedChildProfile?: ResolvedChildProfileV1; noSkills: boolean; noContextFiles: boolean };
 	/** Typed child runtime config the in-process hooks received. */
 	runtime?: Record<string, unknown> & { sessionName?: string; intercomSessionName?: string; orchestratorTarget?: string; runId?: string; agent?: string; childIndex?: number; fanoutChild?: boolean; nestedParent?: { parentRunId: string; parentChildIndex?: number; depth: number }; depth?: number; maxDepth?: number; waitTool?: { enabled: boolean }; inheritProjectContext?: boolean; inheritSkills?: boolean; toolBudget?: unknown };
 }

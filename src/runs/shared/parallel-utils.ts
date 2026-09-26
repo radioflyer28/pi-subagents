@@ -90,6 +90,7 @@ export interface RunnerSubagentStep {
 	gateOn?: import("../../shared/types.ts").ChainGateLayer;
 	toolBudget?: import("../../shared/types.ts").ResolvedToolBudget;
 	capabilityCeiling?: import("./capability-ceiling.ts").ResolvedSubagentCapabilityCeiling;
+	resolvedChildProfile?: import("../../shared/child-profile.ts").ResolvedChildProfileV1;
 	capabilityAudit?: import("./capability-ceiling.ts").SubagentCapabilityAudit;
 	/** Private stable logical-child path for inherited run fan-out accounting. */
 	runFanoutPath?: string;

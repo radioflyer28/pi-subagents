@@ -78,6 +78,42 @@ describe("async recovery descriptor", () => {
 		}
 	});
 
+	it("retains the immutable resolved child profile snapshot for resume", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-recovery-profile-"));
+		try {
+			const resolvedChildProfile = {
+				version: 1, name: "lean", source: "global", sourcePath: "/profiles/lean.json", profileContentDigest: `sha256:${"e".repeat(64)}`, mode: "replace",
+				digest: `sha256:${"a".repeat(64)}`, isolation: "process",
+				resources: { tools: [{ name: "read", provenance: "builtin" }], skills: [], extensions: [] },
+				declarations: { tools: "explicit", skills: "explicit", extensions: "explicit" },
+				context: { project: false, global: false, projectResources: "deny" },
+				compatibility: { profileContract: 1, piProfileSwitch: "prototype" },
+			};
+			fs.writeFileSync(path.join(root, "recovery-descriptor.json"), JSON.stringify({
+				version: 1,
+				runFanoutBudget: runFanoutBudget("run-profile"),
+				sourceRunId: "run-profile",
+				agent: "worker",
+				cwd: root,
+				systemPromptMode: "replace",
+				inheritGlobalContext: false,
+				inheritProjectContext: false,
+				inheritSkills: false,
+				outputMode: "inline",
+				maxSubagentDepth: 2,
+				share: false,
+				resolvedChildProfile,
+			}), "utf-8");
+
+			const descriptor = readAsyncRecoveryDescriptor(root);
+			assert.equal(descriptor?.resolvedChildProfile?.name, "lean");
+			assert.equal(descriptor?.resolvedChildProfile?.digest, resolvedChildProfile.digest);
+			assert.notEqual(descriptor?.resolvedChildProfile, resolvedChildProfile);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("accepts a safe baseRef in persisted recovery descriptors", () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-recovery-base-ref-"));
 		try {

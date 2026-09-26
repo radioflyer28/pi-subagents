@@ -428,6 +428,7 @@ async function runSingleAttempt(
 		waitToolEnabled: options.waitToolEnabled,
 		waitToolDefaultTimeoutMs: options.waitToolDefaultTimeoutMs,
 		capabilityCeiling: options.capabilityCeiling,
+		resolvedChildProfile: options.resolvedChildProfile,
 		thinkingCeiling: options.thinkingCeiling,
 		maxSubagentDepth: options.maxSubagentDepth,
 		runtimeSnapshotHost: options.runtimeSnapshotHost,
@@ -456,6 +457,7 @@ async function runSingleAttempt(
 		outputMode: options.outputMode ?? "inline",
 		...(options.structuredOutput ? { structuredOutputSchema: options.structuredOutput.schema } : {}),
 		...(options.extensionBindings ? { extensionBindings: options.extensionBindings } : {}),
+		...(options.resolvedChildProfile ? { resolvedChildProfileDigest: options.resolvedChildProfile.digest } : {}),
 	});
 	const result: SingleResult = withRunContext({
 		index: options.index ?? 0,

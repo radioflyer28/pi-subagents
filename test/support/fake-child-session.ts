@@ -467,6 +467,8 @@ export function createFakeChildSessions(queueDir: () => string): FakeChildSessio
 							extensionPaths: launch.extensionPaths,
 							ambientExtensions: launch.ambientExtensions,
 							hooks: launch.hooks.map((hook) => hook.name),
+							skillPaths: launch.skillPaths,
+							resolvedChildProfile: launch.resolvedChildProfile,
 							noSkills: launch.noSkills,
 							noContextFiles: launch.noContextFiles,
 							processEnv: launch.processEnv,

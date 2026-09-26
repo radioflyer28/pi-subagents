@@ -873,6 +873,7 @@ export interface SteeringRecoveryDescriptor {
 	maxSubagentDepth: number;
 	maxOutput?: MaxOutputConfig;
 	capabilityCeiling?: ResolvedSubagentCapabilityCeiling;
+	resolvedChildProfile?: import("./child-profile.ts").ResolvedChildProfileV1;
 	launchResolvedExtensions?: LaunchResolvedChildExtensions;
 	share: boolean;
 	sessionDir?: string;
@@ -2521,6 +2522,8 @@ export interface RunSyncOptions {
 	runtimeSnapshotHost?: import("../runs/shared/mcp-direct-tool-allowlist.ts").McpRuntimeSnapshotHost;
 	/** Optional subagent model-scope enforcement. */
 	modelScope?: ModelScopeRule | ModelScopeRule[];
+	/** Immutable exact child launch profile resolved by the parent before session creation. */
+	resolvedChildProfile?: import("./child-profile.ts").ResolvedChildProfileV1;
 	/** Skills to make available (overrides agent default if provided) */
 	skills?: string[];
 	structuredOutput?: {

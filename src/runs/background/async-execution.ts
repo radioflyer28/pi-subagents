@@ -258,6 +258,7 @@ interface AsyncSingleParams {
 	agentConfig: AgentConfig;
 	/** Agent contract before per-run bridge injection, used only for recovery persistence. */
 	recoveryAgentConfig?: AgentConfig;
+	resolvedChildProfile?: import("../../shared/child-profile.ts").ResolvedChildProfileV1;
 	requiredExtensions?: RequiredChildExtensionSnapshot;
 	ctx: AsyncExecutionContext;
 	cwd?: string;
@@ -1931,6 +1932,7 @@ export function executeAsyncSingle(
 		outputMode,
 		...(params.structuredOutputSchema ? { structuredOutputSchema: params.structuredOutputSchema } : {}),
 		...(extensionBindings ? { extensionBindings } : {}),
+		...(params.resolvedChildProfile ? { resolvedChildProfileDigest: params.resolvedChildProfile.digest } : {}),
 	});
 	const resolvedAcceptance = resolveEffectiveAcceptance({
 		explicit: params.acceptance,
@@ -1997,6 +1999,7 @@ export function executeAsyncSingle(
 		...(artifactsDir ? { artifactsDir } : {}),
 		artifactConfig,
 		...(capabilityCeiling ? { capabilityCeiling } : {}),
+		...(params.resolvedChildProfile ? { resolvedChildProfile: params.resolvedChildProfile } : {}),
 	};
 	if (!externalRunner) {
 		try {
@@ -2018,6 +2021,7 @@ export function executeAsyncSingle(
 						parentSessionId: launchParentSessionId,
 						permissionRules,
 						...(capabilityCeiling ? { capabilityCeiling } : {}),
+						...(params.resolvedChildProfile ? { resolvedChildProfile: params.resolvedChildProfile } : {}),
 						agent,
 						task: taskText,
 						...(agentConfig.runner ? { runner: agentConfig.runner } : {}),

@@ -60,6 +60,7 @@ export function buildRunnerChildLaunch(step: RunnerSubagentStep, ctx: RunnerChil
 		mcpDirectTools: step.mcpDirectTools,
 		extensionBindings: normalizeExtensionBindings(step.extensionBindings)?.value,
 		capabilityCeiling: step.capabilityCeiling ?? ctx.capabilityCeiling,
+		resolvedChildProfile: step.resolvedChildProfile,
 		cwd: step.cwd ?? ctx.cwd,
 		intercomSessionName: ctx.childIntercomTarget,
 		sessionName: attempt.sessionName,
