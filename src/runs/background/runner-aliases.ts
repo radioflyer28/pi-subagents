@@ -136,11 +136,18 @@ export function resolveHostPeerAliases(piPackageRoot: string): { aliases: Record
 	const aliases: Record<string, string> = {};
 	const missing: string[] = [];
 	const hostManifest = readManifest(piPackageRoot);
-	// Only known stable pre-chord versions may omit it. Unknown/prerelease
-	// hosts retain the required aliases, rather than hiding a broken install.
-	const stableVersion = typeof hostManifest?.version === "string" ? /^0\.(\d+)\.\d+$/.exec(hostManifest.version) : null;
-	const isPreChord = stableVersion !== null && Number(stableVersion[1]) < 85;
-	const required = [...HOST_PEER_ALIASES, ...(isPreChord ? [] : CHORD_PEER_ALIASES)];
+	// Pi 1.2 removed chord and the agent-core/node export. Only known
+	// stable hosts may omit retired aliases; unknown/prerelease hosts still
+	// fail closed rather than hiding an incomplete installation.
+	const stableVersion = typeof hostManifest?.version === "string" ? /^(\d+)\.(\d+)\.\d+$/.exec(hostManifest.version) : null;
+	const major = stableVersion ? Number(stableVersion[1]) : undefined;
+	const minor = stableVersion ? Number(stableVersion[2]) : undefined;
+	const isPreChord = major === 0 && minor! < 85;
+	const hasRetiredPeers = major !== undefined && (major > 1 || (major === 1 && minor! >= 2));
+	const required = [
+		...HOST_PEER_ALIASES.filter(({ specifier }) => !hasRetiredPeers || specifier !== "@earendil-works/pi-agent-core/node"),
+		...(isPreChord || hasRetiredPeers ? [] : CHORD_PEER_ALIASES),
+	];
 	for (const { specifier, pkg, subpath } of required) {
 		const packageDir = findPeerPackageDir(piPackageRoot, pkg, hostManifest?.name);
 		const target = packageDir ? resolvePackageSubpath(packageDir, subpath) : undefined;

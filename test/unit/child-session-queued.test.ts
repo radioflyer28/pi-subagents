@@ -78,8 +78,8 @@ describe("default factory queued-message probe", () => {
 						subscribe: () => () => {},
 						prompt: async () => {},
 						abort: async () => {},
-						steer: async () => {},
-						followUp: async () => {},
+						steer: async () => "queued",
+						followUp: async () => "handled",
 						messages: [],
 						sessionId: "agent-less",
 					},
@@ -96,6 +96,8 @@ describe("default factory queued-message probe", () => {
 			noContextFiles: true,
 			runtime: { fanoutChild: false, depth: 1, waitTool: { enabled: false }, fast: false } as ChildSessionLaunch["runtime"],
 		});
+		assert.equal(await child.steer("steer input"), undefined, "SDK input dispositions do not widen the child API");
+		assert.equal(await child.followUp("follow-up input"), undefined);
 		assert.equal(child.hasQueuedMessages?.(), false);
 		assert.equal(childSessionHasQueuedMessages(child), false);
 	});
@@ -117,8 +119,8 @@ describe("default factory queued-message probe", () => {
 						subscribe: () => () => {},
 						prompt: async () => {},
 						abort: async () => {},
-						steer: async () => {},
-						followUp: async () => {},
+						steer: async () => "queued",
+						followUp: async () => "handled",
 						messages: [],
 						sessionId: "queued",
 					},

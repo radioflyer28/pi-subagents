@@ -329,6 +329,8 @@ export class MainWatchdogRuntime {
 
 	handleBeforeAgentStart(event: unknown, ctx: ContextLike): void {
 		if (this.disposed) return;
+		// Extension-triggered runs continue the existing user scope and budgets.
+		if (event && typeof event === "object" && "messageType" in event && event.messageType === "custom") return;
 		const incomingPrompt = promptFromBeforeAgentStart(event);
 		this.reset("before_agent_start");
 		this.askedThisPrompt = false;

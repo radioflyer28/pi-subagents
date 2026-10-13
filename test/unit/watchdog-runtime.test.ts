@@ -74,6 +74,46 @@ function createRepo(): string {
 }
 
 describe("main watchdog runtime", () => {
+	it("preserves user scope and warning continuation budgets on custom-message starts", async () => {
+		const ctx = { cwd: "/tmp/project" };
+		const deltas: string[] = [];
+		const runtime = new MainWatchdogRuntime({
+			resolveConfig: () => configResult(enabledConfig({ stalemateRepeats: 3 })),
+			review: (request) => {
+				deltas.push(request.delta);
+				request.emitWarning({ ...warning(), severity: "blocker", summary: "Same blocker" });
+				return { stopReason: "stop" };
+			},
+		});
+		try {
+			runtime.handleBeforeAgentStart({ messageType: "user", prompt: "Fix the assigned bug.", systemPrompt: "SYSTEM PROMPT MUST NOT BE USER SCOPE" }, ctx);
+			runtime.enqueueDelta("Assistant:\nFirst attempt.");
+			await runtime.handleAgentEnd({}, ctx);
+			assert.equal(runtime.getSnapshot().boundaryRepeats, 1);
+			runtime.handleBeforeAgentStart({ messageType: "custom", message: { role: "custom", content: "Continue review" }, systemPrompt: "SYSTEM PROMPT MUST NOT BE USER SCOPE" }, ctx);
+			runtime.enqueueDelta("Assistant:\nSecond attempt.");
+			await runtime.handleAgentEnd({}, ctx);
+			assert.equal(runtime.getSnapshot().boundaryRepeats, 2, "custom continuation must not reset repeat budget");
+			assert.match(deltas[1]!, /Fix the assigned bug/);
+			assert.doesNotMatch(deltas.join("\n"), /SYSTEM PROMPT MUST NOT BE USER SCOPE/);
+		} finally { runtime.dispose(); }
+	});
+
+	it("does not classify a custom-only start's system prompt as user scope", async () => {
+		const ctx = { cwd: "/tmp/project" };
+		const deltas: string[] = [];
+		const runtime = new MainWatchdogRuntime({
+			resolveConfig: () => configResult(enabledConfig()),
+			review: (request) => { deltas.push(request.delta); return { stopReason: "stop" }; },
+		});
+		try {
+			runtime.handleBeforeAgentStart({ messageType: "custom", message: { role: "custom", content: "Notification" }, systemPrompt: "SYSTEM PROMPT MUST NOT BE USER SCOPE" }, ctx);
+			runtime.enqueueDelta("Assistant:\nHandled notification.");
+			await runtime.handleAgentEnd({}, ctx);
+			assert.equal(deltas.length, 1);
+			assert.doesNotMatch(deltas[0]!, /SYSTEM PROMPT MUST NOT BE USER SCOPE|Current scope:/);
+		} finally { runtime.dispose(); }
+	});
 	function activityTurn(name: string, args: Record<string, unknown>, text: string, id = "activity-call") {
 		return { type: "turn_end", message: { role: "assistant", content: [{ type: "toolCall", id, name, arguments: args }] }, toolResults: [{ role: "toolResult", toolCallId: id, toolName: name, content: [{ type: "text", text }], isError: false }] };
 	}

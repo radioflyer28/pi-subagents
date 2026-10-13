@@ -47,13 +47,18 @@ test("executeAsyncSingle preloads all peer aliases before the selected runner lo
 			throw new Error("spawn boundary captured");
 		});
 		nodeModule.syncBuiltinESMExports();
-		for (const scenario of ["stable", "pre-chord", "missing-pre-chord"]) {
+		for (const scenario of ["stable", "pre-chord", "missing-pre-chord", "pi-1.2"]) {
 			if (scenario === "pre-chord") {
 				fs.writeFileSync(path.join(host, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", version: "0.84.3", exports: { ".": "./index.mjs" } }));
 				fs.rmSync(path.join(host, "node_modules", "@earendil-works/chord"), { recursive: true });
 				for (const specifier of ["@earendil-works/chord", "@earendil-works/chord/context"]) delete expectedAliases[specifier];
 			}
 			if (scenario === "missing-pre-chord") fs.unlinkSync(expectedAliases["@earendil-works/pi-agent-core/node"]!);
+			if (scenario === "pi-1.2") {
+				fs.writeFileSync(path.join(host, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", version: "1.2.0", exports: { ".": "./index.mjs" } }));
+				fs.writeFileSync(path.join(host, "node_modules", "@earendil-works/pi-agent-core", "package.json"), JSON.stringify({ name: "@earendil-works/pi-agent-core", version: "1.2.0", exports: { ".": "./index.mjs" } }));
+				delete expectedAliases["@earendil-works/pi-agent-core/node"];
+			}
 			const configuredExtension = scenario === "pre-chord" ? fileURLToPath(import.meta.url) : undefined;
 			const result = executeAsyncSingle(`spawn-preload-${scenario}`, {
 				agent: "worker", task: "Inspect launch wiring", agentConfig: makeAgent("worker", configuredExtension ? { extensions: [configuredExtension] } : {}),
@@ -68,7 +73,7 @@ test("executeAsyncSingle preloads all peer aliases before the selected runner lo
 				continue;
 			}
 			assert.match(result.content[0]!.text, /spawn boundary captured/);
-			assert.equal(spawn.mock.callCount(), scenario === "stable" ? 1 : 2);
+			assert.equal(spawn.mock.callCount(), scenario === "stable" ? 1 : scenario === "pi-1.2" ? 3 : 2);
 			const [command, args, options] = spawn.mock.calls.at(-1)!.arguments;
 			assert.ok(path.isAbsolute(command));
 			assert.equal(options.env[PI_CODING_AGENT_PACKAGE_ROOT_ENV], host);

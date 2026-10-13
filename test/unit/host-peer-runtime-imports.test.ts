@@ -218,7 +218,7 @@ test("chord is omitted before 0.85, but required host-first on chord-era and unk
 		assert.equal(preChord.aliases[`${chord}/context`], undefined);
 		// An extension-local copy must never satisfy a missing host chord export.
 		writePackage(path.join(extension, "node_modules", chord), chord, "0.85.1", { ".": "./index.mjs", "./context": "./context.mjs" });
-		for (const version of ["0.85.0", "0.85.1", "1.0.0", "0.84.4-test", "unknown"]) {
+		for (const version of ["0.85.0", "0.85.1", "1.0.0", "1.1.0", "1.2.0-test", "0.84.4-test", "unknown"]) {
 			writePackage(host, "@earendil-works/pi-coding-agent", version, hostExports);
 			const result = resolveHostPeerAliases(host);
 			for (const specifier of [chord, `${chord}/context`]) assert.ok(result.missing.includes(specifier), version);
@@ -235,6 +235,17 @@ test("chord is omitted before 0.85, but required host-first on chord-era and unk
 		fs.rmSync(path.join(host, "node_modules", "@earendil-works/pi-tui"), { recursive: true });
 		result = resolveHostPeerAliases(host);
 		assert.deepEqual(result.missing, ["@earendil-works/pi-tui"], "pre-chord hosts still require TUI");
+		writePackage(path.join(host, "node_modules", "@earendil-works/pi-tui"), "@earendil-works/pi-tui", "1.2.0", packages.get("@earendil-works/pi-tui")!);
+		fs.rmSync(hostChord, { recursive: true });
+		writePackage(path.join(host, "node_modules", "@earendil-works/pi-agent-core"), "@earendil-works/pi-agent-core", "1.2.0", { ".": "./index.mjs" });
+		for (const version of ["1.2.0", "1.2.1", "1.3.0", "2.0.0"]) {
+			writePackage(host, "@earendil-works/pi-coding-agent", version, hostExports);
+			result = resolveHostPeerAliases(host);
+			assert.deepEqual(result.missing, [], version);
+			for (const retired of [chord, `${chord}/context`, "@earendil-works/pi-agent-core/node"]) assert.equal(result.aliases[retired], undefined, version);
+		}
+		fs.rmSync(path.join(host, "node_modules", "@earendil-works/pi-tui"), { recursive: true });
+		assert.deepEqual(resolveHostPeerAliases(host).missing, ["@earendil-works/pi-tui"], "modern hosts still require TUI");
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });
 	}

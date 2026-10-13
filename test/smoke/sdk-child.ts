@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { pathToFileURL } from "node:url";
 import { AgentSession } from "@earendil-works/pi-coding-agent";
-import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core";
+import { Agent } from "@earendil-works/pi-agent-core";
 import { createModels } from "@earendil-works/pi-ai";
 
-const state = globalThis.__sdkSmoke = { AgentSession, BACKGROUND_CONTEXT, createModels, started: 0, stopped: 0, faux: undefined };
+const state = globalThis.__sdkSmoke = { AgentSession, Agent, createModels, started: 0, stopped: 0, faux: undefined };
 // Exercise the runner's reachable watchdog graph, including its runtime TUI import.
 await import(pathToFileURL(`${process.env.SMOKE_EXTENSION}/src/watchdog/tool-actions.js`).href);
 const { loadRunnerChildSessionFactory } = await import(pathToFileURL(`${process.env.SMOKE_EXTENSION}/src/runs/background/runner-child-sessions.js`).href);
