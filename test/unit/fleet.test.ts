@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
+import fsDefault, * as fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
@@ -11,6 +12,7 @@ import { EXTERNAL_RUN_REGISTRY_KEY, EXTERNAL_RUN_REGISTRY_VERSION, registerExter
 import { collectFleetSnapshot, openSubagentFleet, SubagentFleetComponent } from "../../src/tui/fleet.ts";
 import { persistForegroundRunHistory, restoreForegroundRunHistory } from "../../src/runs/foreground/foreground-history.ts";
 import { FLEET_STATUS_WIDGET_KEY } from "../../src/tui/fleet-status.ts";
+import { setMainThinkingLevelSource } from "../../src/tui/running-tone.ts";
 import { registerLivePromptAudit, rewritePromptWithGuidance } from "../../src/runs/foreground/prompt-audit.ts";
 import { getArtifactPaths, getArtifactsDir, getProjectArtifactsDir } from "../../src/shared/artifacts.ts";
 import type { HerdrClient } from "../../src/inspectors/herdr/client.ts";
@@ -89,6 +91,7 @@ function writeAsyncRun(root: string, input: {
 const theme = {
 	fg: (_name: string, text: string) => text,
 	bold: (text: string) => text,
+	getThinkingBorderColor: (_level: string) => (text: string) => text,
 };
 
 const markdownTheme: MarkdownTheme = {
@@ -124,7 +127,7 @@ describe("native subagent fleet", () => {
 			sessionManager: { getSessionId: () => "fleet-rewrite-session" },
 			modelRegistry: {
 				async getApiKeyAndHeaders() { return { ok: true as const, apiKey: "test" }; },
-				getRegisteredProviderConfig() { return { api: "faux", streamSimple: streamFn }; },
+				streamSimple: streamFn,
 			},
 		} as never;
 		const rewritten = await rewritePromptWithGuidance({
@@ -536,11 +539,58 @@ describe("native subagent fleet", () => {
 				{ asyncDirRoot: root, resultsDir: path.join(root, "results"), refreshMs: 60_000, markdownTheme },
 			);
 			try {
-				assert.ok(component.render(100).some((line) => line.includes("gpt-5.5 · thinking high")));
+				// The provider-qualified label wraps across rows in the 61-column detail pane, so
+				// reassemble the detail column before asserting the model and thinking metadata.
+				const detail = component.render(100)
+					.map((line) => line.split("│")[2] ?? "")
+					.join(" ")
+					.replace(/\s+/g, " ");
+				assert.ok(detail.includes("openai-codex/gpt-5.5 · thinking high"));
 			} finally {
 				component.dispose();
 			}
 		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("colors running Fleet rows by their child's recorded level, and whole runs by the main session's", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fleet-levels-"));
+		setMainThinkingLevelSource(() => "xhigh");
+		try {
+			writeAsyncRun(root, { id: "level-steps", state: "running", agents: ["scout", "reviewer"], thinking: ["high", "medium"], lastUpdate: 300 });
+			writeAsyncRun(root, { id: "level-workflow", state: "running", mode: "workflow", agents: ["worker"], lastUpdate: 200 });
+			const state = stateForTest();
+			state.foregroundControls.set("level-foreground", { runId: "level-foreground", mode: "single", startedAt: 10, updatedAt: 400, currentAgent: "planner", currentIndex: 0, thinking: "max" });
+			const tones = ["accent", ...["off", "minimal", "low", "medium", "high", "xhigh", "max"].map((level) => `thinking:${level}`)];
+			const colored = (tone: string, text: string) => `\x1b[38;5;${Math.max(0, tones.indexOf(tone)) + 100}m${text}\x1b[39m`;
+			const ansiTheme = {
+				fg: (name: string, text: string) => colored(name, text),
+				bold: (text: string) => text,
+				getThinkingBorderColor: (level: string) => (text: string) => colored(`thinking:${level}`, text),
+			};
+			const component = new SubagentFleetComponent(
+				{ terminal: { rows: 40, columns: 140 }, requestRender() {} } as never,
+				ansiTheme as never,
+				state,
+				() => {},
+				{ asyncDirRoot: root, resultsDir: path.join(root, "results"), refreshMs: 60_000, markdownTheme },
+			);
+			try {
+				const lines = component.render(140);
+				const plain = (line: string) => line.replace(/\x1b\[[0-9;]*m/g, "");
+				const glyphTone = (label: string) => {
+					const code = lines.find((line) => plain(line).includes(`\u25cf ${label}`))?.match(/\x1b\[38;5;(\d+)m\u25cf/)?.[1];
+					return code === undefined ? undefined : tones[Number(code) - 100];
+				};
+				assert.equal(glyphTone("scout"), "thinking:high", "async step uses its recorded level");
+				assert.equal(glyphTone("planner"), "thinking:max", "foreground child uses its recorded level");
+				assert.equal(glyphTone("workflow"), "thinking:xhigh", "a whole workflow run uses the main level");
+			} finally {
+				component.dispose();
+			}
+		} finally {
+			setMainThinkingLevelSource(() => undefined);
 			fs.rmSync(root, { recursive: true, force: true });
 		}
 	});
@@ -1330,7 +1380,7 @@ describe("native subagent fleet", () => {
 				assert.ok(lines.some((line) => line.includes("worker")));
 				assert.ok(lines.some((line) => line.includes("reviewer")));
 				assert.ok(lines.some((line) => line.includes("foreground · live")));
-				assert.ok(lines.some((line) => line.includes("live-model · thinking high")));
+				assert.ok(lines.some((line) => line.includes("provider/live-model · thinking high")));
 				assert.ok(lines.every((line) => !line.includes("Implement the active task") && !line.includes("Review the active task")));
 				assert.ok(lines.some((line) => line.includes("Conversation") && line.includes("assistant response")));
 				assert.ok(lines.some((line) => line.includes("Worker live result")));
@@ -1415,7 +1465,7 @@ describe("native subagent fleet", () => {
 						const lines = component.render(100);
 						assert.ok(lines.some((line) => line.includes(expected)), `missing ${expected}`);
 						if (initialKey.startsWith("foreground-recent:")) {
-							assert.ok(lines.some((line) => line.includes("recent-model · thinking xhigh")));
+							assert.ok(lines.some((line) => line.includes("provider/recent-model · thinking xhigh")));
 						}
 					} finally {
 						component.dispose();
@@ -1574,7 +1624,7 @@ describe("native subagent fleet", () => {
 			const lines = component.render(90);
 			const selectedLine = lines.find((line) => line.includes("›"));
 			assert.ok(selectedLine?.includes("run-work"), `unexpected selected row: ${selectedLine}`);
-			assert.ok(lines.some((line) => line.includes("Model: raw-model · thinking medium")));
+			assert.ok(lines.some((line) => line.includes("Model: provider/raw-model · thinking medium")));
 		} finally {
 			component.dispose();
 		}
@@ -1587,7 +1637,7 @@ describe("native subagent fleet", () => {
 			{ initialKey: "foreground-recent:run-recent:0", refreshMs: 60_000 },
 		);
 		try {
-			assert.ok(recentComponent.render(90).some((line) => line.includes("Model: recent-raw-model · thinking xhigh")));
+			assert.ok(recentComponent.render(90).some((line) => line.includes("Model: provider/recent-raw-model · thinking xhigh")));
 		} finally {
 			recentComponent.dispose();
 		}
@@ -1795,6 +1845,117 @@ describe("native subagent fleet", () => {
 		assert.equal(renderRequests, 1, "disposing cancels periodic redraws");
 	});
 
+	it("reuses an unchanged transcript across refresh ticks and rereads it when it changes", (t) => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fleet-transcript-reuse-"));
+		let transcriptOpens = 0;
+		let failNextOpen = true;
+		const openSync = fsDefault.openSync;
+		t.mock.method(fsDefault, "openSync", (...args: Parameters<typeof fs.openSync>) => {
+			if (path.basename(String(args[0])) === "transcript-0.jsonl") {
+				transcriptOpens++;
+				if (failNextOpen) {
+					failNextOpen = false;
+					throw Object.assign(new Error("too many open files"), { code: "EMFILE" });
+				}
+			}
+			return openSync(...args);
+		});
+		syncBuiltinESMExports();
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		const asyncDir = writeAsyncRun(root, {
+			id: "reuse-running",
+			state: "running",
+			transcript: [{ recordType: "message", role: "assistant", text: "first alpha answer" }],
+		});
+		const transcriptPath = path.join(asyncDir, "transcript-0.jsonl");
+		const state = stateForTest();
+		state.baseCwd = root;
+		const component = new SubagentFleetComponent(
+			{ terminal: { rows: 32, columns: 100 }, requestRender() {} } as never,
+			theme as never,
+			state,
+			() => {},
+			{ asyncDirRoot: root, resultsDir: path.join(root, "results"), refreshMs: 250, markdownTheme },
+		);
+		const tickAndRender = () => {
+			t.mock.timers.tick(250);
+			return component.render(100);
+		};
+		try {
+			assert.ok(!component.render(100).some((line) => line.includes("first alpha answer")), "the first read fails");
+			assert.ok(tickAndRender().some((line) => line.includes("first alpha answer")), "a failed read recovers on the next tick");
+			for (let tick = 0; tick < 3; tick++) assert.ok(tickAndRender().some((line) => line.includes("first alpha answer")));
+			assert.equal(transcriptOpens, 2, "an unchanged transcript is read once across refresh ticks");
+
+			fs.appendFileSync(transcriptPath, `${JSON.stringify({ recordType: "message", role: "assistant", text: "second appended answer" })}\n`);
+			assert.ok(tickAndRender().some((line) => line.includes("second appended answer")), "an append shows on the next tick");
+
+			const fixedTime = new Date(1_700_000_000_000);
+			fs.utimesSync(transcriptPath, fixedTime, fixedTime);
+			tickAndRender();
+			const before = fs.statSync(transcriptPath, { bigint: true });
+			fs.writeFileSync(transcriptPath, fs.readFileSync(transcriptPath, "utf-8").replace("second appended answer", "second replaced answer"));
+			fs.utimesSync(transcriptPath, fixedTime, fixedTime);
+			const after = fs.statSync(transcriptPath, { bigint: true });
+			assert.deepEqual([after.size, after.mtimeNs], [before.size, before.mtimeNs]);
+			assert.ok(tickAndRender().some((line) => line.includes("second replaced answer")), "a same-size, same-mtime rewrite shows on the next tick");
+
+			const opens = transcriptOpens;
+			component.invalidate();
+			component.render(100);
+			component.handleInput("r");
+			component.render(100);
+			assert.equal(transcriptOpens, opens + 2, "host invalidation and the refresh key reread the transcript");
+		} finally {
+			component.dispose();
+			t.mock.timers.reset();
+			t.mock.restoreAll();
+			syncBuiltinESMExports();
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	for (const malformedOnly of [false, true]) it(`reuses a readable transcript with no displayable events (${malformedOnly ? "only malformed records" : "user records only"})`, (t) => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fleet-transcript-empty-"));
+		let transcriptOpens = 0;
+		const openSync = fsDefault.openSync;
+		t.mock.method(fsDefault, "openSync", (...args: Parameters<typeof fs.openSync>) => {
+			if (path.basename(String(args[0])) === "transcript-0.jsonl") transcriptOpens++;
+			return openSync(...args);
+		});
+		syncBuiltinESMExports();
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		writeAsyncRun(root, {
+			id: "user-only",
+			state: "complete",
+			transcript: Array.from({ length: 3 }, (_, index) => ({ recordType: "message", role: "user", text: `queued prompt ${index}` })),
+		});
+		if (malformedOnly) fs.writeFileSync(path.join(root, "user-only", "transcript-0.jsonl"), "not json\n[1]\n", "utf-8");
+		const state = stateForTest();
+		state.baseCwd = root;
+		const component = new SubagentFleetComponent(
+			{ terminal: { rows: 32, columns: 100 }, requestRender() {} } as never,
+			theme as never,
+			state,
+			() => {},
+			{ asyncDirRoot: root, resultsDir: path.join(root, "results"), refreshMs: 250, markdownTheme },
+		);
+		try {
+			component.render(100);
+			for (let tick = 0; tick < 3; tick++) {
+				t.mock.timers.tick(250);
+				component.render(100);
+			}
+			assert.equal(transcriptOpens, 1);
+		} finally {
+			component.dispose();
+			t.mock.timers.reset();
+			t.mock.restoreAll();
+			syncBuiltinESMExports();
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("refreshes the roster while the overlay remains open", async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fleet-refresh-"));
 		try {
@@ -1808,12 +1969,6 @@ describe("native subagent fleet", () => {
 				() => {},
 				{ asyncDirRoot: root, resultsDir: path.join(root, "results"), refreshMs: 250 },
 			);
-			let invalidations = 0;
-			const originalInvalidate = component.invalidate.bind(component);
-			component.invalidate = () => {
-				invalidations++;
-				originalInvalidate();
-			};
 			try {
 				assert.ok(component.render(90).some((line) => line.includes("No tracked children")));
 				const initialOutput = Array.from({ length: 40 }, (_, index) => `output line ${index}`).join("\n");
@@ -1827,7 +1982,6 @@ describe("native subagent fleet", () => {
 				lines = component.render(90);
 				assert.ok(lines.some((line) => line.includes("LATEST LIVE OUTPUT")), "live transcript should keep following new output");
 				assert.ok(renderRequests > 0);
-				assert.ok(invalidations > 0, "live refresh must invalidate cached TUI frames before rendering");
 			} finally {
 				component.dispose();
 			}

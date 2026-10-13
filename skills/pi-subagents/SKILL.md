@@ -29,19 +29,26 @@ and their resolved `tools` allow `subagent`.
 | Need | Use |
 | --- | --- |
 | One bounded task for one child | direct `{ agent, task }` |
-| JavaScript control flow or data-dependent branching; sequence, fanout, retry, rolling fanout, or aggregation | `workflowScript` with `runs.run(...)` / `runs.all(...)` |
-| A broad plan split into visible narrow stages per lane | `workflowScript` with `runs.lanes([{ key, stages: [...] }])` |
+| JavaScript control flow or data-dependent branching; sequence, fanout, retry, rolling fanout, or aggregation | a workflow script with `runs.run(...)` / `runs.all(...)` |
+| A broad plan split into visible narrow stages per lane | a workflow script with `runs.lanes([{ key, stages: [...] }])` |
 | Independent worktree or repository lanes | `references/multi-lane-orchestration.md` |
 | Council of advisors | `../council-mode/SKILL.md` |
 | Management, status, steering, authoring, or inspection | `action` |
 
-`workflowScript` is code-driven: `runs.run(...)` for keyed steps,
+To launch a workflow script, write it as one ```` ```js workflow ```` fenced
+block in your reply, then call `subagent({ workflow: true, ... })` in the same
+reply. Use `workflow: "./path/to/script.js"` for a script file and
+`workflow: "<name>"` for a named resource.
+
+A workflow script is code-driven: `runs.run(...)` for keyed steps,
 `runs.all([...])` for fanout, plain JavaScript for branching and aggregation.
 Keep scripts portable: use top-level `await`, plain helpers, or explicit Promise
 chains, not nested async helpers. Legacy top-level `chain` / `tasks` inputs and
-durable `.chain.md` execution are inspection or migration material only.
+durable `.chain.md` execution are inspection or migration material only, except
+that `disabledFeatures: ["workflow-scripts"]` replaces scripts with top-level
+`chain` and `tasks` (see [configuration](../../docs/configuration.md#chain-and-tasks-without-workflow-scripts)).
 
-Use `runs.lanes(...)` only inside a `workflowScript`, not as a top-level mode,
+Use `runs.lanes(...)` only inside a workflow script, not as a top-level mode,
 when a broad, predeclared plan benefits from visible per-lane stages; otherwise
 use ordinary `runs.run(...)` / `runs.all(...)`. See the [canonical staged-lane
 example](../../docs/workflows.md#parallel-sequential-lanes). Keep assignments
@@ -80,7 +87,7 @@ that runner explicitly supports the option.
 
 ## Read the reference for the branch
 
-For exact API fields and worked examples, call `subagent({action:"guide",topic:"tool-reference"})` or `topic:"workflows"`. The compact tool definition is not the recipe catalog; use `topic:"missions"` for mission updates and schedules.
+For exact API fields and worked examples, call `subagent({action:"guide",options:{topic:"tool-reference"}})` or `topic:"workflows"`. The compact tool definition is not the recipe catalog; use `topic:"missions"` for mission updates and schedules.
 
 | Branch | Read |
 | --- | --- |
@@ -102,7 +109,7 @@ For an authorized complex delegated workflow, read `prompting-and-roles.md` and
 - Exact model names are deployment policy. Put them in user/project settings or profiles, not package guidance.
 - Give every child a compact meta-prompt checklist: objective; repo/cwd/ref; authority/edit boundary; relevant files/contracts and constraints; success/acceptance criteria; validation; expected output/report; and stop/ask conditions. See `references/prompting-and-roles.md`.
 - Before launching a writer for substantial mutation work, classify it as single-seam or multi-seam and partition multi-seam work across exclusive component owners, gates, and durable handoffs before an integration-only owner. See `references/multi-lane-orchestration.md`.
-- For mutation work, use an isolated lane/worktree when isolation, overlap, or concurrent juggling matters; keep one writer per cwd/worktree. See `references/multi-lane-orchestration.md` for lane mechanics.
+- For mutation work, use an isolated lane/worktree when isolation, overlap, or concurrent juggling matters; keep one writer per cwd/worktree. `worktree: true` refuses to launch unless the source checkout is clean (untracked files count; `.pi/subagents/` does not), so commit your own changes first or plan the lane without managed isolation. See `references/multi-lane-orchestration.md` for lane mechanics.
 - Keep long/high-output validation out of chat: prefer `interactive_shell` dispatch/background monitors, bounded logs, or subagent-owned reports; return a concise summary plus report path unless same-turn output is required. Do not use `interactive_shell` as an implicit fallback for a failed `subagent` lane; see `references/execution-controls.md`.
 - Treat subagent workflow, child launch, prompt runtime, extension load, and child tooling setup failures as lane infrastructure blockers. Stop, report the exact failure and run/worktree state, verify a clean worktree or capture a partial diff, and use only a clear same-protocol retry or an owner-approved execution-mode fallback.
 - For cross-codebase work, record the repo, explicit `cwd`, authority boundary, and expected output before launch.

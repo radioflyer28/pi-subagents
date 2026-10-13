@@ -124,7 +124,8 @@ describe("workflow chat progress rendering", () => {
 				const result = await createExecutor().execute(
 					"wf-headless",
 					{
-						workflowScript: `return await runs.run("scout", { agent: "missing-agent", task: "scan" });`,
+						// A non-literal agent reaches launch-time resolution instead of pre-launch validation.
+						workflowScript: `const agent = "missing-agent"; return await runs.run("scout", { agent, task: "scan" });`,
 						async: false,
 						chatProgress: scenario === "explicit off" ? "off" : "auto",
 						...(other ? { cwd: other } : {}),
@@ -182,7 +183,7 @@ describe("workflow chat progress rendering", () => {
 			const updates: Array<{ details?: Details }> = [];
 			const result = await createExecutor().execute(
 				toolCallId,
-				{ workflowScript: `return await runs.run("scout", { agent: "missing-agent", task: "scan", phase: "Validation", label: "Find renderer seam" });`, async: false },
+				{ workflowScript: `const agent = "missing-agent"; return await runs.run("scout", { agent, task: "scan", phase: "Validation", label: "Find renderer seam" });`, async: false },
 				new AbortController().signal,
 				(update) => updates.push(update),
 				ctx(repo),
@@ -319,7 +320,7 @@ describe("workflow chat progress rendering", () => {
 						{ operation: "run", key: "scout", state: "completed", runId: "run-scout", phase: "Validation", label: "Found renderer seam", durationMs: 12 },
 						{ operation: "run", key: "tests", state: "started", phase: "Validation", label: "focused integration suite" },
 						{ operation: "run", key: "review", state: "failed", phase: "Validation", label: "fresh-context UX review", error: "needs fixes" },
-						{ operation: "run", key: "stale", state: "stopped", phase: "Validation", label: "superseded exact-head review", error: "Workflow stopped by user." },
+						{ operation: "run", key: "stale", state: "stopped", phase: "Validation", label: "superseded exact-head review", error: "Workflow stopped." },
 					],
 					emits: [],
 					console: [],
@@ -333,7 +334,7 @@ describe("workflow chat progress rendering", () => {
 		assert.match(text, /complete\s+scout Found renderer seam/);
 		assert.match(text, /running\s+tests focused integration suite/);
 		assert.match(text, /failed\s+review fresh-context UX review .* needs fixes/);
-		assert.match(text, /stopped\s+stale superseded exact-head review .* Workflow stopped by user/);
+		assert.match(text, /stopped\s+stale superseded exact-head review .* Workflow stopped\./);
 	});
 
 	it("renders detached workflow trace rows as paused attention", () => {

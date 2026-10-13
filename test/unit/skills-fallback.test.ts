@@ -377,6 +377,7 @@ describe("skills filesystem fallback", () => {
 					...process.env,
 					HOME: fakeHome,
 					USERPROFILE: fakeHome,
+					APPDATA: fakeHome,
 					PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
 					PI_DISCOVERY_MARKER: marker,
 					PI_OFFLINE: "1",

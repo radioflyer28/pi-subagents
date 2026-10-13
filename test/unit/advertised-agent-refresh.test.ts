@@ -6,8 +6,6 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { it } from "node:test";
 import { SUBAGENT_CHILD_ENV } from "../../src/runs/shared/child-runtime-config.ts";
-import { PI_CODING_AGENT_PACKAGE_ROOT_ENV } from "../../src/shared/utils.ts";
-import { resolveInstalledPiPackageRoot } from "../../src/runs/shared/pi-spawn.ts";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -15,13 +13,6 @@ it("emits bounded file-only snapshots, refreshes through management, and perform
 	const home = fs.mkdtempSync(path.join(os.tmpdir(), "advertised-refresh-"));
 	const env = { ...process.env, PI_CODING_AGENT_DIR: home };
 	delete env[SUBAGENT_CHILD_ENV];
-	// The activation gate trusts the running host or an explicit override, and this
-	// subprocess runs under the test runner, so declare the SDK host it simulates
-	// instead of relying on a copy next to the checkout.
-	if (!env[PI_CODING_AGENT_PACKAGE_ROOT_ENV]) {
-		const hostRoot = resolveInstalledPiPackageRoot();
-		if (hostRoot) env[PI_CODING_AGENT_PACKAGE_ROOT_ENV] = hostRoot;
-	}
 	try {
 		const output = execFileSync(process.execPath, ["--experimental-strip-types", "--import", "./test/support/register-loader.mjs", "--input-type=module", "--eval", String.raw`
 			import assert from "node:assert/strict";
@@ -39,7 +30,7 @@ it("emits bounded file-only snapshots, refreshes through management, and perform
 				"---\nname: " + name + "\ndescription: " + description + "\nadvertise: " + advertise + "\n---\nAct narrowly.\n");
 			const handlers = new Map();
 			let tool;
-			let activeTools = ["subagent"];
+			const activeTools = ["subagent"];
 			const pi = new Proxy({
 				events: { on() { return () => {}; }, emit() {} },
 				on(event, handler) { handlers.set(event, [...(handlers.get(event) ?? []), handler]); },
@@ -48,15 +39,16 @@ it("emits bounded file-only snapshots, refreshes through management, and perform
 			}, { get(target, key) { return key in target ? target[key] : () => undefined; } });
 			register(pi);
 			const ctx = {
-				cwd, hasUI: false, model: { provider: "test", id: "test" },
+				cwd, isIdle() { return false; }, hasUI: false, model: { provider: "test", id: "test" },
 				modelRegistry: { getAvailable() { return []; }, getAll() { return []; } },
 				sessionManager: { getSessionId() { return "advertised-test"; }, getSessionFile() { return undefined; }, getBranch() { return []; } },
 			};
 			// Invoke the catalog hooks directly; activation lifecycle is registered after them.
 			const refresh = (reason = "reload") => handlers.get("session_start").at(-2)({ reason }, ctx);
-			const emit = async (systemPrompt = "base", selectedTools = activeTools) => {
-				const result = await handlers.get("before_agent_start").at(-2)({ systemPrompt, systemPromptOptions: { selectedTools: selectedTools ?? undefined } }, ctx);
-				return result?.systemPrompt ?? systemPrompt;
+			const emit = async (_previous = "base", selectedTools = activeTools) => {
+				const sections = {};
+				await handlers.get("before_agent_start").at(-2)({ systemPrompt: "base", systemPromptOptions: { selectedTools, sections } }, ctx);
+				return sections.advertised_subagents ?? "base";
 			};
 			const io = { statSync: 0, readdirSync: 0, readFileSync: 0 };
 			const originals = {};
@@ -85,11 +77,8 @@ it("emits bounded file-only snapshots, refreshes through management, and perform
 			let prompt = await noIo(() => emit());
 			assert.match(prompt, /<name>specialist<\/name>/);
 			assert.doesNotMatch(prompt, /hidden-/);
-			assert.match(prompt, /Before execution.*action: "list", capabilities: true/);
+			assert.match(prompt, /^The following file-defined subagents opted into discovery\..*Use subagent only when delegation is needed\.$/m);
 			assert.equal(await noIo(() => emit(prompt, ["read"])), "base");
-			activeTools = ["read"];
-			assert.equal(await noIo(() => emit(prompt, null)), "base");
-			activeTools = ["subagent"];
 			const ceiling = registerSubagentCapabilityCeiling({ sessionId: "advertised-test", source: "test", ceiling: { allowedAgents: [] } });
 			assert.equal(await noIo(() => emit(prompt)), "base");
 			ceiling.dispose();
@@ -98,36 +87,36 @@ it("emits bounded file-only snapshots, refreshes through management, and perform
 			write("pending", "pending", "External change awaiting refresh");
 			await manage({ action: "get", agent: "specialist" });
 			assert.doesNotMatch(await noIo(() => emit()), /<name>pending<\/name>/, "reads must not refresh");
-			await assert.rejects(manage({ action: "update", agent: "specialist", config: { advertise: "invalid" } }), /config.advertise must be a boolean/);
+			await assert.rejects(manage({ action: "update", agent: "specialist", options: { config: { advertise: "invalid" } } }), /config.advertise must be a boolean/);
 			assert.doesNotMatch(await noIo(() => emit()), /<name>pending<\/name>/, "failed mutations must not refresh");
 			fs.unlinkSync(path.join(dir, "pending.md"));
-			let result = await manage({ action: "update", agent: "specialist", config: { description: "Updated specialist" } });
+			let result = await manage({ action: "update", agent: "specialist", options: { config: { description: "Updated specialist" } } });
 			assert.notEqual(result.isError, true, JSON.stringify(result));
 			assert.match(await noIo(() => emit(prompt)), /Updated specialist/);
 			assert.match(fs.readFileSync(path.join(dir, "specialist.md"), "utf8"), /advertise: true/);
-			result = await manage({ action: "disable", agent: "specialist", agentScope: "user" });
+			result = await manage({ action: "disable", agent: "specialist", options: { agentScope: "user" } });
 			assert.notEqual(result.isError, true, JSON.stringify(result));
 			assert.equal(await noIo(() => emit(prompt)), "base");
-			result = await manage({ action: "enable", agent: "specialist", agentScope: "user" });
+			result = await manage({ action: "enable", agent: "specialist", options: { agentScope: "user" } });
 			assert.notEqual(result.isError, true, JSON.stringify(result));
 			prompt = await noIo(() => emit());
 			assert.match(prompt, /Updated specialist/);
-			result = await manage({ action: "delete", agent: "specialist", agentScope: "user" });
+			result = await manage({ action: "delete", agent: "specialist", options: { agentScope: "user" } });
 			assert.notEqual(result.isError, true, JSON.stringify(result));
 			assert.equal(await noIo(() => emit(prompt)), "base");
-			result = await manage({ action: "create", config: { name: "created", description: "Created specialist", systemPrompt: "Act narrowly.", scope: "user", advertise: true } });
+			result = await manage({ action: "create", options: { config: { name: "created", description: "Created specialist", systemPrompt: "Act narrowly.", scope: "user", advertise: true } } });
 			assert.notEqual(result.isError, true, JSON.stringify(result));
 			assert.match(await noIo(() => emit()), /<name>created<\/name>/);
-			result = await manage({ action: "update", agent: "created", config: { name: "renamed" } });
+			result = await manage({ action: "update", agent: "created", options: { config: { name: "renamed" } } });
 			assert.notEqual(result.isError, true, JSON.stringify(result));
 			prompt = await noIo(() => emit());
 			assert.match(prompt, /<name>renamed<\/name>/);
 			assert.doesNotMatch(prompt, /<name>created<\/name>/);
-			result = await manage({ action: "update", agent: "renamed", config: { advertise: false } });
+			result = await manage({ action: "update", agent: "renamed", options: { config: { advertise: false } } });
 			assert.notEqual(result.isError, true, JSON.stringify(result));
 			assert.equal(await noIo(() => emit(prompt)), "base");
 			// Inject a refresh-only read failure after the management file write has succeeded.
-			await manage({ action: "update", agent: "renamed", config: { advertise: true } });
+			await manage({ action: "update", agent: "renamed", options: { config: { advertise: true } } });
 			prompt = await noIo(() => emit());
 			assert.match(prompt, /<name>renamed<\/name>/);
 			const writeFile = fs.writeFileSync;
@@ -137,7 +126,7 @@ it("emits bounded file-only snapshots, refreshes through management, and perform
 				return result;
 			};
 			syncBuiltinESMExports();
-			result = await manage({ action: "update", agent: "renamed", config: { description: "Persisted despite refresh failure" } });
+			result = await manage({ action: "update", agent: "renamed", options: { config: { description: "Persisted despite refresh failure" } } });
 			assert.notEqual(result.isError, true, "refresh failure must not change the persisted mutation result");
 			assert.match(fs.readFileSync(path.join(dir, "renamed.md"), "utf8"), /advertise: true/);
 			assert.equal(await noIo(() => emit(prompt)), "base", "failed refresh withdraws stale guidance");
@@ -149,14 +138,14 @@ it("emits bounded file-only snapshots, refreshes through management, and perform
 			refresh();
 			await emit();
 			assert.match(await noIo(() => emit()), /<name>renamed<\/name>/);
-			await manage({ action: "delete", agent: "renamed", agentScope: "user" });
+			await manage({ action: "delete", agent: "renamed", options: { agentScope: "user" } });
 			write("huge", "a".repeat(100000), "huge name");
 			write("escaped-name", "b" + "&".repeat(4000), "escaped huge name");
 			for (let i = 0; i < 25; i++) write("opt-" + i, "pkg.opt-" + i, i % 2 ? '<>&"'.repeat(300) : "🦜界".repeat(300));
 			refresh();
 			await emit();
 			prompt = await noIo(async () => { let result; for (let i = 0; i < 20; i++) result = await emit(); return result; });
-			const catalog = prompt.slice(prompt.indexOf("<advertised_subagents>"));
+			const catalog = prompt;
 			assert.ok(Buffer.byteLength(catalog) <= 12288);
 			assert.doesNotMatch(catalog, /<name>[ab]/);
 			assert.match(catalog, /&lt;&gt;&amp;&quot;/);
@@ -173,6 +162,70 @@ it("emits bounded file-only snapshots, refreshes through management, and perform
 			process.stdout.write("prompt contracts passed; zero prompt-time stat/readdir/readFile calls at 0, 250, and 277 definitions");
 		`], { cwd: root, env, encoding: "utf8", timeout: 60_000 });
 		assert.match(output, /prompt contracts passed/);
+	} finally {
+		fs.rmSync(home, { recursive: true, force: true });
+	}
+});
+
+it("delivers the catalog as a structured prompt section instead of replacing the system prompt", () => {
+	const home = fs.mkdtempSync(path.join(os.tmpdir(), "advertised-section-"));
+	const env = { ...process.env, PI_CODING_AGENT_DIR: home };
+	delete env[SUBAGENT_CHILD_ENV];
+	try {
+		const output = execFileSync(process.execPath, ["--experimental-strip-types", "--import", "./test/support/register-loader.mjs", "--input-type=module", "--eval", String.raw`
+			import assert from "node:assert/strict";
+			import fs from "node:fs";
+			import path from "node:path";
+			import register from "./src/extension/index.ts";
+			import { registerSubagentCapabilityCeiling } from "./src/runs/shared/capability-ceiling.ts";
+			const home = process.env.PI_CODING_AGENT_DIR;
+			const cwd = path.join(home, "project");
+			fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+			const dir = path.join(home, "agents");
+			fs.mkdirSync(dir);
+			fs.writeFileSync(path.join(dir, "specialist.md"), "---\nname: specialist\ndescription: Section specialist\nadvertise: true\n---\nAct narrowly.\n");
+			const handlers = new Map();
+			const pi = new Proxy({
+				events: { on() { return () => {}; }, emit() {} },
+				on(event, handler) { handlers.set(event, [...(handlers.get(event) ?? []), handler]); },
+				registerTool() {},
+				getActiveTools() { return ["subagent"]; },
+			}, { get(target, key) { return key in target ? target[key] : () => undefined; } });
+			register(pi);
+			const ctx = {
+				cwd, isIdle() { return false; }, hasUI: false, model: { provider: "test", id: "test" },
+				modelRegistry: { getAvailable() { return []; }, getAll() { return []; } },
+				sessionManager: { getSessionId() { return "section-test"; }, getSessionFile() { return undefined; }, getBranch() { return []; } },
+			};
+			handlers.get("session_start").at(-2)({ reason: "startup" }, ctx);
+			const before = handlers.get("before_agent_start").at(-2);
+			const emit = async (selectedTools, sections = {}) => {
+				const event = { systemPrompt: "base", systemPromptOptions: { selectedTools, sections } };
+				return { result: await before(event, ctx), sections: event.systemPromptOptions.sections };
+			};
+
+			let turn = await emit(["subagent"]);
+			assert.equal(turn.result, undefined, "the sections path must not return systemPrompt");
+			assert.match(turn.sections.advertised_subagents, /<name>specialist<\/name>/);
+			assert.match(turn.sections.advertised_subagents, /Section specialist/);
+			assert.doesNotMatch(turn.sections.advertised_subagents, /advertised_subagents/, "Pi adds the tag from the section key");
+
+			turn = await emit(["read"]);
+			assert.equal(turn.result, undefined);
+			assert.equal("advertised_subagents" in turn.sections, false, "no section when subagent is not selected");
+
+			const ceiling = registerSubagentCapabilityCeiling({ sessionId: "section-test", source: "test", ceiling: { allowedAgents: [] } });
+			turn = await emit(["subagent"]);
+			assert.equal(turn.result, undefined);
+			assert.equal("advertised_subagents" in turn.sections, false, "no section when the ceiling excludes every agent");
+			ceiling.dispose();
+
+			turn = await emit(["subagent"], { other: "kept" });
+			assert.equal(turn.sections.other, "kept", "other sections are untouched");
+			assert.match(turn.sections.advertised_subagents, /<name>specialist<\/name>/);
+			process.stdout.write("section delivery passed");
+		`], { cwd: root, env, encoding: "utf8", timeout: 60_000 });
+		assert.match(output, /section delivery passed/);
 	} finally {
 		fs.rmSync(home, { recursive: true, force: true });
 	}

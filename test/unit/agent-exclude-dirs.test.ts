@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { fileSymlinkSkip } from "../support/symlink-support.ts";
 import { afterEach, beforeEach, describe, it, mock } from "node:test";
 import fs from "node:fs";
 import * as os from "node:os";
@@ -93,21 +94,21 @@ describe("settings subagents.agentExcludeDirs", () => {
 		assert.equal(discoverAgents(project, "both").agents.some((agent) => agent.name === "late-plugin"), true);
 	});
 
-	it("matches real paths and symlink aliases without matching sibling prefixes", () => {
+	it("matches real paths and symlink aliases without matching sibling prefixes", { skip: fileSymlinkSkip }, () => {
 		const plugins = path.join(user, "agents", "plugins");
 		writeAgent(plugins, "hidden-alias");
 		writeAgent(`${plugins}-kept`, "sibling-kept");
 		writeAgent(path.join(plugins, "..kept"), "hidden-descendant");
-		fs.symlinkSync(plugins, path.join(user, "agents", "alias"), "dir");
+		fs.symlinkSync(plugins, path.join(user, "agents", "alias"), process.platform === "win32" ? "junction" : "dir");
 		fs.symlinkSync(path.join(plugins, "hidden-alias.md"), path.join(user, "agents", "alias.md"));
-		fs.symlinkSync(plugins, path.join(root, "excluded-alias"), "dir");
+		fs.symlinkSync(plugins, path.join(root, "excluded-alias"), process.platform === "win32" ? "junction" : "dir");
 		settings(user, { agentExcludeDirs: [path.join(root, "excluded-alias", ".")], agentScanDirs: [plugins] });
 		const names = discoverAgents(project, "both").agents.map((agent) => agent.name);
 		assert.equal(names.includes("hidden-alias"), false);
 		assert.equal(names.includes("hidden-descendant"), false);
 		assert.equal(names.includes("sibling-kept"), true);
 		fs.unlinkSync(path.join(root, "excluded-alias"));
-		fs.symlinkSync(`${plugins}-kept`, path.join(root, "excluded-alias"), "dir");
+		fs.symlinkSync(`${plugins}-kept`, path.join(root, "excluded-alias"), process.platform === "win32" ? "junction" : "dir");
 		const retargeted = discoverAgents(project, "both").agents.map((agent) => agent.name);
 		assert.equal(retargeted.includes("hidden-alias"), true);
 		assert.equal(retargeted.includes("sibling-kept"), false);
@@ -121,7 +122,7 @@ describe("settings subagents.agentExcludeDirs", () => {
 		for (const scope of ["user", "project"] as const) {
 			clearAgentDiscoveryCache();
 			const alias = path.join(root, `${scope}-scan-alias`);
-			fs.symlinkSync(hidden, alias, "dir");
+			fs.symlinkSync(hidden, alias, process.platform === "win32" ? "junction" : "dir");
 			settings(user, { agentExcludeDirs: [hidden], ...(scope === "user" ? { agentScanDirs: [alias] } : {}) });
 			settings(path.join(project, ".pi"), scope === "project" ? { agentScanDirs: [alias] } : {});
 			const reads = recordReads();
@@ -132,7 +133,7 @@ describe("settings subagents.agentExcludeDirs", () => {
 			assert.equal(reads.some((filePath) => [hidden, alias].some((dir) => filePath === dir || filePath.startsWith(`${dir}${path.sep}`))), false);
 			mock.restoreAll();
 			fs.unlinkSync(alias);
-			fs.symlinkSync(allowed, alias, "dir");
+			fs.symlinkSync(allowed, alias, process.platform === "win32" ? "junction" : "dir");
 			const cached = discoverAgentSnapshot(project, "both", undefined, { includeChains: false });
 			assert.equal(cached.effective.agents.some((agent) => agent.name === "allowed-retarget"), true);
 			assert.equal(cached.all[scope].some((agent) => agent.name === "allowed-retarget"), true);
@@ -149,7 +150,7 @@ describe("settings subagents.agentExcludeDirs", () => {
 		const alias = path.join(source === "fixed" ? user : container, "agents");
 		writeAgent(hidden, "hidden-source");
 		writeAgent(allowed, "allowed-source");
-		fs.symlinkSync(hidden, alias, "dir");
+		fs.symlinkSync(hidden, alias, process.platform === "win32" ? "junction" : "dir");
 		const previousExtraDirs = process.env.PI_SUBAGENT_EXTRA_AGENT_DIRS;
 		try {
 			if (source === "environment") process.env.PI_SUBAGENT_EXTRA_AGENT_DIRS = alias;
@@ -157,7 +158,7 @@ describe("settings subagents.agentExcludeDirs", () => {
 			settings(user, { agentExcludeDirs: [hidden], ...(source === "wildcard" ? { agentScanDirs: [path.join(root, "sources", "*", "agents")] } : {}) }, source === "package" ? { packages: [container] } : {});
 			assert.equal(discoverAgents(project, "both").agents.some((agent) => agent.name === "allowed-source"), false);
 			fs.unlinkSync(alias);
-			fs.symlinkSync(allowed, alias, "dir");
+			fs.symlinkSync(allowed, alias, process.platform === "win32" ? "junction" : "dir");
 			assert.equal(discoverAgents(project, "both").agents.some((agent) => agent.name === "allowed-source"), true);
 		} finally {
 			if (previousExtraDirs === undefined) delete process.env.PI_SUBAGENT_EXTRA_AGENT_DIRS;
@@ -173,7 +174,7 @@ describe("settings subagents.agentExcludeDirs", () => {
 			process.env.USERPROFILE = root;
 			const plugins = path.join(user, "agents", "plugins");
 			fs.mkdirSync(plugins, { recursive: true });
-			fs.symlinkSync(plugins, path.join(root, "plugin-alias"), "dir");
+			fs.symlinkSync(plugins, path.join(root, "plugin-alias"), process.platform === "win32" ? "junction" : "dir");
 			settings(user, { agentExcludeDirs: ["~/plugin-alias/later"], agentScanDirs: [path.join(plugins, "*", "agents")] });
 			discoverAgents(project, "both");
 			writeAgent(path.join(plugins, "later", "agents"), "missing-hidden");

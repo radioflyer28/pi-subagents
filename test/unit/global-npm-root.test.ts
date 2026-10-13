@@ -17,7 +17,7 @@ function fixture(script: string) {
 	fs.mkdirSync(bin);
 	const npm = path.join(bin, process.platform === "win32" ? "npm.cmd" : "npm");
 	fs.writeFileSync(npm, process.platform === "win32" ? `@echo off\r\n${script}\r\n` : `#!/bin/sh\n${script}\n`, { mode: 0o755 });
-	return { dir, env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}` } };
+	return { dir, env: { ...process.env, APPDATA: path.join(dir, "empty-appdata"), PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}` } };
 }
 
 function printRoot(root: string): string {

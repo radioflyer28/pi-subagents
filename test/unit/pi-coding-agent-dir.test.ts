@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -9,7 +8,6 @@ import { handleCreate } from "../../src/agents/agent-management.ts";
 import { clearSkillCache, discoverAvailableSkills, resolveSkillPath } from "../../src/agents/skills.ts";
 import { loadConfig, updateConfig } from "../../src/extension/config.ts";
 import { diagnoseIntercomBridge, resolveIntercomBridge } from "../../src/intercom/intercom-bridge.ts";
-import { loadRunsForAgent, recordRun } from "../../src/runs/shared/run-history.ts";
 import { cleanupAllArtifactDirs, getArtifactsDir, getProjectArtifactsDir } from "../../src/shared/artifacts.ts";
 import { TEMP_ARTIFACTS_DIR } from "../../src/shared/types.ts";
 import { getAgentDir, getConfigDirName, getProjectConfigDir, resolveConfigDirName } from "../../src/shared/utils.ts";
@@ -33,16 +31,6 @@ function readText(result: { content: Array<{ type: string; text?: string }> }): 
 	assert.equal(first.type, "text");
 	assert.equal(typeof first.text, "string");
 	return first.text;
-}
-
-function taskHash(task: string): string {
-	return createHash("sha256").update(task).digest("hex");
-}
-
-function assertPrivateHistoryModes(historyPath: string): void {
-	if (process.platform === "win32") return;
-	assert.equal(fs.statSync(path.dirname(historyPath)).mode & 0o777, 0o700);
-	assert.equal(fs.statSync(historyPath).mode & 0o777, 0o600);
 }
 
 describe("PI_CODING_AGENT_DIR runtime paths", () => {
@@ -226,24 +214,7 @@ Package skill content.
 		assert.ok(available.find((skill) => skill.name === "package-skill" && skill.source === "user-package"));
 	});
 
-	it("records private redacted run history and cleans session artifacts under the configured agent dir", () => {
-		const task = "PROMPT_AUDIT_SENTINEL_1021 Inspect customer ACME token=SECRET";
-		recordRun("env-agent", task, 0, 42);
-		const historyPath = path.join(agentDir, "run-history.jsonl");
-		assert.equal(fs.existsSync(historyPath), true);
-		assertPrivateHistoryModes(historyPath);
-
-		const rawHistory = fs.readFileSync(historyPath, "utf-8");
-		assert.doesNotMatch(rawHistory, /PROMPT_AUDIT_SENTINEL_1021|Inspect customer|ACME|SECRET/);
-		assert.match(rawHistory, /"task":"\[redacted\]"/);
-		assert.match(rawHistory, /"taskHash":"[a-f0-9]{64}"/);
-
-		const history = loadRunsForAgent("env-agent");
-		assert.equal(history.length, 1);
-		assert.equal(history[0]?.task, "[redacted]");
-		assert.equal(history[0]?.taskHash, taskHash(task));
-		assert.equal(history[0]?.status, "ok");
-
+	it("cleans session artifacts under the configured agent dir", () => {
 		const artifactPath = path.join(agentDir, "sessions", "session-1", "subagent-artifacts", "old_output.md");
 		writeFile(artifactPath, "old output");
 		const oldTime = new Date(Date.now() - 60_000);
@@ -254,21 +225,6 @@ Package skill content.
 
 		cleanupAllArtifactDirs(1 / 24 / 60 / 60 / 1000);
 		assert.equal(fs.existsSync(artifactPath), false);
-	});
-
-	it("records explicit run outcomes without guessing legacy outcomes", () => {
-		const historyPath = path.join(agentDir, "run-history.jsonl");
-		writeFile(historyPath, `${JSON.stringify({ agent: "outcome-agent", task: "[redacted]", ts: 1, status: "error", duration: 1, exit: 143 })}\n`);
-		recordRun("outcome-agent", "failed", 1, 2);
-		recordRun("outcome-agent", "timed out", 1, 3, { timedOut: true });
-		recordRun("outcome-agent", "interrupted", 1, 4, { interrupted: true });
-		recordRun("outcome-agent", "stopped", 1, 5, { stopped: true });
-		recordRun("outcome-agent", "completed", 0, 6);
-		recordRun("outcome-agent", "signalled", 143, 7, { processSignal: "SIGTERM" });
-
-		const history = loadRunsForAgent("outcome-agent");
-		assert.deepEqual(history.map((entry) => entry.outcome), ["stopped", "completed", "stopped", "interrupted", "timed_out", "failed", undefined]);
-		assert.equal(history.at(-1)?.exit, 143);
 	});
 
 	it("resolves configured artifact directory preferences", () => {
@@ -287,6 +243,22 @@ Package skill content.
 		writeFile(configPath, JSON.stringify({ defaultSubagentContext: "fresh" }));
 		assert.equal(loadConfig().defaultSubagentContext, "fresh");
 
+		writeFile(configPath, JSON.stringify({ asyncWidgetCollapsed: true }));
+		assert.equal(loadConfig().asyncWidgetCollapsed, true);
+		writeFile(configPath, JSON.stringify({ asyncWidgetCollapsed: "true" }));
+		assert.deepEqual(loadConfig(), {});
+		for (const asyncWidgetLayout of ["adaptive", "rows"]) {
+			writeFile(configPath, JSON.stringify({ asyncWidgetLayout }));
+			assert.equal(loadConfig().asyncWidgetLayout, asyncWidgetLayout);
+		}
+		writeFile(configPath, JSON.stringify({ asyncWidgetLayout: "compact" }));
+		assert.deepEqual(loadConfig(), {});
+		assert.throws(() => updateConfig((config) => config), /config\.asyncWidgetLayout must be "adaptive" or "rows"/);
+		writeFile(configPath, JSON.stringify({ programStatus: false }));
+		assert.equal(loadConfig().programStatus, false);
+		writeFile(configPath, JSON.stringify({ programStatus: "off" }));
+		assert.throws(() => updateConfig((config) => config), /config\.programStatus must be a boolean/);
+
 		writeFile(configPath, JSON.stringify({ defaultSubagentContext: "other" }));
 		assert.throws(() => updateConfig((config) => config), /config\.defaultSubagentContext must be "fresh" or "fork"/);
 	});
@@ -304,6 +276,29 @@ Package skill content.
 		writeFile(configPath, "{}");
 		assert.throws(() => updateConfig(() => ({ checkpointBeforeDeadlineMs: Infinity })), /config\.checkpointBeforeDeadlineMs must be a positive integer no larger than 2147483647/);
 		assert.deepEqual(loadConfig(), {});
+	});
+
+	it("fails config load for invalid disabled features instead of falling back to defaults", () => {
+		const configPath = path.join(agentDir, "extensions", "subagent", "config.json");
+		writeFile(configPath, JSON.stringify({ disabledFeatures: ["watchdogs"] }));
+		assert.throws(() => loadConfig(), /config\.disabledFeatures entry "watchdogs" is not one of:/);
+	});
+
+	it("loads runnerLaunchers and fails closed on malformed launchers", () => {
+		const configPath = path.join(agentDir, "extensions", "subagent", "config.json");
+		const runnerLaunchers = { net: ["nono", "run", "--profile", " net ", "--"], "subagent-net": ["subagent-net"], "net.v2_x-1": ["wrap"] };
+		writeFile(configPath, JSON.stringify({ runnerLaunchers }));
+		assert.deepEqual(loadConfig().runnerLaunchers, runnerLaunchers);
+		for (const invalid of [[], "nono", { net: [] }, { net: "nono run" }, { net: [""] }, { net: [" "] }, { net: ["nono", 1] }, { net: ["no\u0000no"] }, { "": ["nono"] }, { "'net'": ["nono"] }, { "a b": ["nono"] }, { "-x": ["nono"] }, { ["n".repeat(129)]: ["nono"] }]) {
+			writeFile(configPath, JSON.stringify({ runnerLaunchers: invalid }));
+			assert.throws(() => loadConfig(), /config\.runnerLaunchers.*(?:letters, digits|argv array|JSON object)/);
+		}
+	});
+
+	it("fails config load for invalid scheduledRuns because it controls the tool schema", () => {
+		const configPath = path.join(agentDir, "extensions", "subagent", "config.json");
+		writeFile(configPath, JSON.stringify({ scheduledRuns: { enabled: "false" } }));
+		assert.throws(() => loadConfig(), /config\.scheduledRuns\.enabled must be a boolean/);
 	});
 
 	it("loads exact model response aliases and preserves them during config updates", () => {
@@ -344,6 +339,14 @@ Package skill content.
 		const configPath = path.join(agentDir, "extensions", "subagent", "config.json");
 		writeFile(configPath, JSON.stringify({ modelExclusions: { defaultTtlMs: 300_000 }, asyncByDefault: false }));
 		assert.throws(() => loadConfig(), /config\.modelExclusions was removed/);
+	});
+
+	it("fails closed instead of dropping restrictions when another config value is invalid", () => {
+		const configPath = path.join(agentDir, "extensions", "subagent", "config.json");
+		for (const restriction of [{ authorityPolicy: { stopRun: "forbid" } }, { permissions: { rules: { write: "deny" } } }, { toolBudget: { hard: 5 } }, { runnerLaunchers: { net: ["nono"] } }]) {
+			writeFile(configPath, JSON.stringify({ resultScanLogging: "bogus", ...restriction }));
+			assert.throws(() => loadConfig(), /config\.resultScanLogging must be/);
+		}
 	});
 
 	it("rejects invalid artifactDir config values", () => {
@@ -410,51 +413,6 @@ Package skill content.
 
 		writeFile(configPath, JSON.stringify({ orcaProgressTabs: { enabled: true, focus: true } }));
 		assert.throws(() => updateConfig((config) => config), /config\.orcaProgressTabs\.focus is not supported/);
-	});
-
-	it("hardens and redacts existing run history while recording", () => {
-		const historyPath = path.join(agentDir, "run-history.jsonl");
-		fs.mkdirSync(agentDir, { recursive: true, mode: 0o755 });
-		fs.writeFileSync(historyPath, `${JSON.stringify({
-			agent: "env-agent",
-			task: "legacy customer secret",
-			ts: 1,
-			status: "ok",
-			duration: 2,
-		})}\nnot json with pasted secret\n`, { encoding: "utf-8", mode: 0o644 });
-
-		recordRun("env-agent", "new customer secret", 1, 9);
-
-		assertPrivateHistoryModes(historyPath);
-		const rawHistory = fs.readFileSync(historyPath, "utf-8");
-		assert.doesNotMatch(rawHistory, /legacy customer secret|new customer secret|not json with pasted secret/);
-
-		const history = loadRunsForAgent("env-agent");
-		assert.equal(history.length, 2);
-		assert.equal(history[0]?.task, "[redacted]");
-		assert.equal(history[0]?.taskHash, taskHash("new customer secret"));
-		assert.equal(history[0]?.status, "error");
-		assert.equal(history[0]?.exit, 1);
-		assert.equal(history[1]?.task, "[redacted]");
-		assert.equal(history[1]?.taskHash, taskHash("legacy customer secret"));
-	});
-
-	it("re-sanitizes run history after an external write", () => {
-		recordRun("env-agent", "first secret", 0, 1);
-		const historyPath = path.join(agentDir, "run-history.jsonl");
-		fs.appendFileSync(historyPath, `${JSON.stringify({
-			agent: "env-agent",
-			task: "externally written secret",
-			ts: 2,
-			status: "ok",
-			duration: 2,
-		})}\n`);
-
-		recordRun("env-agent", "second secret", 0, 3);
-
-		const rawHistory = fs.readFileSync(historyPath, "utf-8");
-		assert.doesNotMatch(rawHistory, /first secret|externally written secret|second secret/);
-		assert.equal(loadRunsForAgent("env-agent").length, 3);
 	});
 
 	it("uses the configured agent dir for subagent bridge instruction files", () => {

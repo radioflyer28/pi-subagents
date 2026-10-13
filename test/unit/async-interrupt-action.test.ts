@@ -4,11 +4,11 @@ import { syncBuiltinESMExports } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
-import { acquireActiveAsyncCapacity, ActiveAsyncCapacityError } from "../../src/runs/background/active-async-capacity.ts";
+import { acquireActiveAsyncCapacity, ActiveAsyncCapacityError, getActiveAsyncCapacitySnapshot } from "../../src/runs/background/active-async-capacity.ts";
 import { ACTIVE_RUN_INDEX_DIR, updateActiveRunIndex } from "../../src/runs/background/active-run-index.ts";
 import { resolveAsyncResumeTarget } from "../../src/runs/background/async-resume.ts";
-import { consumeSteerRequests, consumeStopRequestPayload } from "../../src/runs/background/control-channel.ts";
-import { resultFilePath, writeAsyncResultFile } from "../../src/runs/background/result-files.ts";
+import { consumeSteerRequests, consumeStopRequestPayload, interruptRequestPath } from "../../src/runs/background/control-channel.ts";
+import { removeResultIndex, resultFilePath, writeAsyncResultFile } from "../../src/runs/background/result-files.ts";
 import { TERMINAL_RUN_INDEX_DIR } from "../../src/runs/background/terminal-run-index.ts";
 import { listAsyncRuns } from "../../src/runs/background/async-status.ts";
 import { readProcessTerminal } from "../../src/runs/background/process-terminal.ts";
@@ -186,6 +186,23 @@ function text(result: { content: Array<{ type: string; text?: string }> }): stri
 }
 
 describe("async interrupt action", () => {
+	it("does not interrupt another running job when an explicit id cannot be resolved", async () => {
+		const state = createState();
+		const runId = `unrelated-coordinator-${Date.now().toString(36)}`;
+		const asyncDir = createRunningAsync(state, runId);
+		try {
+			for (const extra of [{}, { dir: asyncDir }]) {
+				const result = await executorWithKill(state, () => true)
+					.execute("interrupt", { action: "interrupt", id: "missing-exact-worker", ...extra }, new AbortController().signal, undefined, ctx());
+				assert.equal(result.isError, true);
+				assert.equal(fs.existsSync(interruptRequestPath(asyncDir)), false);
+				assert.equal(JSON.parse(fs.readFileSync(path.join(asyncDir, "status.json"), "utf8")).state, "running");
+			}
+		} finally {
+			cleanup(runId, asyncDir);
+		}
+	});
+
 	it("routes debug.run to async lifecycle debug, not live foreground status", async () => {
 		const state = createState();
 		state.currentSessionId = "session";
@@ -821,6 +838,24 @@ describe("async interrupt action", () => {
 		}
 	});
 
+	it("rejects a stop after a running run closes its stop inbox", async () => {
+		const state = createState();
+		state.currentSessionId = "session";
+		const runId = `stop-closed-${Date.now().toString(36)}`;
+		const asyncDir = createRunningAsync(state, runId, { track: false, sessionId: "session" });
+		try {
+			writeJson(path.join(asyncDir, "control", "stop-inbox-closed.json"), { version: 1, closedAt: Date.now() });
+			const result = await executorWithKill(state, () => true)
+				.execute("stop-closed", { action: "stop", id: runId }, new AbortController().signal, undefined, ctx());
+
+			assert.equal(result.isError, true);
+			assert.match(text(result), /Failed to stop async run.*Retry stop after runner shutdown is observed/);
+			assert.equal(fs.existsSync(path.join(asyncDir, "control", "stop-requests")), false);
+		} finally {
+			cleanup(runId, asyncDir);
+		}
+	});
+
 	it("seals a paused whole run only with exact observed runner proof", async () => {
 		const state = createState();
 		state.currentSessionId = "session";
@@ -836,13 +871,14 @@ describe("async interrupt action", () => {
 				.execute("stop-paused-child", { action: "stop", id: runId, childId: "paused" }, new AbortController().signal, undefined, ctx());
 			assert.equal(childStop.isError, true);
 			assert.equal(fs.existsSync(path.join(asyncDir, "control", "stop-requests")), false);
+			writeJson(path.join(asyncDir, "control", "stop-inbox-closed.json"), { version: 1, closedAt: Date.now() });
 
 			const result = await executorWithKill(state, () => true)
 				.execute("stop-paused", { action: "stop", id: runId }, new AbortController().signal, undefined, ctx());
 
 			assert.equal(result.isError, undefined);
 			assert.match(text(result), /Stopped paused async run/);
-			assert.ok(fs.readdirSync(path.join(asyncDir, "control", "stop-requests")).length > 0);
+			assert.equal(fs.existsSync(path.join(asyncDir, "control", "stop-requests")), false);
 			const status = JSON.parse(fs.readFileSync(path.join(asyncDir, "status.json"), "utf-8"));
 			const payload = JSON.parse(fs.readFileSync(path.join(RESULTS_DIR, `${runId}.json`), "utf-8"));
 			assert.equal(status.state, "stopped");
@@ -851,6 +887,7 @@ describe("async interrupt action", () => {
 			assert.equal(payload.state, "stopped");
 			assert.equal(payload.results[0].output, "done");
 			assert.equal(payload.results[1].stopped, true);
+			assert.equal(payload.results[1].error, "Subagent stopped.");
 			assert.equal(fs.readFileSync(path.join(asyncDir, "process-terminal.json"), "utf-8"), proofBefore);
 			const repeated = await executorWithKill(state, () => true)
 				.execute("stop-paused-again", { action: "stop", id: runId }, new AbortController().signal, undefined, ctx());
@@ -865,6 +902,77 @@ describe("async interrupt action", () => {
 			cleanup(runId, asyncDir);
 		}
 	});
+
+	it("seals a paused workflow child whose result was already delivered and frees the workflow slot", async () => {
+		const state = createState();
+		state.currentSessionId = "session";
+		const runId = `stop-paused-delivered-${Date.now().toString(36)}`;
+		const asyncDir = createPausedAsync(state, runId);
+		const workflowDir = path.join(ASYNC_DIR, `${runId}-workflow`);
+		const capacityRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pi-paused-delivered-capacity-"));
+		try {
+			writeJson(path.join(asyncDir, "process-terminal.json"), observedProof(runId, "runner-a"));
+			writeJson(path.join(asyncDir, "control", "stop-inbox-closed.json"), { version: 1, closedAt: Date.now() });
+			fs.rmSync(path.join(RESULTS_DIR, `${runId}.json`));
+			removeResultIndex(RESULTS_DIR, "session", runId);
+			const workflow = acquireActiveAsyncCapacity({ sessionId: "session", limit: 1, runId: `${runId}-workflow`, kind: "workflow", asyncDir: workflowDir }, { rootDir: capacityRoot });
+			workflow.markWorkflowStarted();
+			writeJson(path.join(workflowDir, "status.json"), { runId: `${runId}-workflow`, sessionId: "session", mode: "workflow", state: "failed", startedAt: 100, endedAt: 200, steps: [{ agent: "worker", workflowKey: "child", runId, async: true, status: "paused" }] });
+			assert.deepEqual(getActiveAsyncCapacitySnapshot("session", 1, { rootDir: capacityRoot }), { used: 1, limit: 1 });
+
+			const result = await executorWithKill(state, () => true)
+				.execute("stop-paused-delivered", { action: "stop", id: runId }, new AbortController().signal, undefined, ctx());
+
+			assert.equal(result.isError, undefined);
+			assert.match(text(result), /Stopped paused async run/);
+			const status = JSON.parse(fs.readFileSync(path.join(asyncDir, "status.json"), "utf-8"));
+			const payload = JSON.parse(fs.readFileSync(path.join(RESULTS_DIR, `${runId}.json`), "utf-8"));
+			assert.equal(status.state, "stopped");
+			assert.equal(status.steps[1].status, "stopped");
+			assert.equal(payload.id, runId);
+			assert.equal(payload.sessionId, "session");
+			assert.equal(payload.state, "stopped");
+			assert.deepEqual(payload.results.map((entry: { agent: string; success: boolean }) => [entry.agent, entry.success]), [["done", true], ["paused", false]]);
+			assert.equal(payload.results[1].stopped, true);
+			assert.deepEqual(getActiveAsyncCapacitySnapshot("session", 1, { rootDir: capacityRoot }), { used: 0, limit: 1 });
+		} finally {
+			cleanup(runId, asyncDir);
+			fs.rmSync(workflowDir, { recursive: true, force: true });
+			fs.rmSync(capacityRoot, { recursive: true, force: true });
+		}
+	});
+
+	for (const payloadCase of ["malformed pending", "foreign pending", "malformed public"] as const) {
+		it(`refuses to seal a paused run over an unindexed ${payloadCase} result`, async () => {
+			const state = createState();
+			state.currentSessionId = "session";
+			const runId = `stop-paused-bad-${payloadCase.replace(" ", "-")}-${Date.now().toString(36)}`;
+			const asyncDir = createPausedAsync(state, runId);
+			const payloadPath = payloadCase === "malformed public" ? path.join(RESULTS_DIR, `${runId}.json`) : path.join(RESULTS_DIR, "result-pending", "session", `${runId}.json`);
+			try {
+				writeJson(path.join(asyncDir, "process-terminal.json"), observedProof(runId, "runner-a"));
+				writeJson(path.join(asyncDir, "control", "stop-inbox-closed.json"), { version: 1, closedAt: Date.now() });
+				fs.rmSync(path.join(RESULTS_DIR, `${runId}.json`));
+				removeResultIndex(RESULTS_DIR, "session", runId);
+				if (payloadCase === "foreign pending") writeJson(payloadPath, { id: "other-run", sessionId: "session", results: [] });
+				else {
+					fs.mkdirSync(path.dirname(payloadPath), { recursive: true });
+					fs.writeFileSync(payloadPath, "{", "utf-8");
+				}
+				const payloadBefore = fs.readFileSync(payloadPath, "utf-8");
+
+				const result = await executorWithKill(state, () => true)
+					.execute("stop-paused-bad", { action: "stop", id: runId }, new AbortController().signal, undefined, ctx());
+
+				assert.equal(result.isError, true);
+				assert.equal(JSON.parse(fs.readFileSync(path.join(asyncDir, "status.json"), "utf-8")).state, "paused");
+				assert.equal(fs.readFileSync(payloadPath, "utf-8"), payloadBefore);
+			} finally {
+				fs.rmSync(payloadPath, { force: true });
+				cleanup(runId, asyncDir);
+			}
+		});
+	}
 
 	it("seals stale-repaired paused status without losing current terminal authority", async () => {
 		const state = createState();

@@ -7,7 +7,7 @@ import { describe, it } from "node:test";
 
 import { applyResolvedChildProfile, registerChildProfileProvider, resolveChildProfileReference, type ResolvedChildProfileV1 } from "../../src/api/child-profiles.ts";
 import { buildInProcessChildLaunch } from "../../src/runs/shared/child-launch.ts";
-import { filterResolvedChildProfileContextFiles } from "../../src/runs/shared/child-session.ts";
+import { createDefaultChildSessionFactory, filterResolvedChildProfileContextFiles, type PiCodingAgentModule } from "../../src/runs/shared/child-session.ts";
 import { makeAgent } from "../support/helpers.ts";
 
 function contract(name = "lean", overrides: Partial<ResolvedChildProfileV1> = {}): ResolvedChildProfileV1 {
@@ -87,7 +87,7 @@ describe("child profile enforcement", () => {
 		assert.throws(() => applyResolvedChildProfile({ agent: makeAgent("reviewer", { tools: ["read"] }), profile: contract(), backend: "process", capabilityCeiling: { version: 1, allowedTools: ["grep"], denyExtensions: false, sources: ["test"] } }), /denied tools: read/);
 	});
 
-	it("threads exact skill paths through the common child loader contract", () => {
+	it("threads exact skill paths through the common child loader contract", async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-child-profile-unit-"));
 		try {
 			const skillPath = path.join(root, "SKILL.md");
@@ -122,6 +122,29 @@ describe("child profile enforcement", () => {
 			assert.equal(launch.session.ambientExtensions, false);
 			assert.deepEqual(launch.session.skillPaths, [skillPath]);
 			assert.equal(launch.session.resolvedChildProfile?.digest, profile.digest);
+			let loaderOptions: { additionalSkillPaths?: string[]; skillsOverride?: (base: { skills: Array<{ name: string; filePath: string }> }) => { skills: Array<{ name: string; filePath: string }> } } | undefined;
+			const factory = createDefaultChildSessionFactory({ loadPiCodingAgent: async () => ({
+				ModelRuntime: { create: async () => ({}) },
+				SettingsManager: { create: () => ({}) },
+				DefaultResourceLoader: class {
+					constructor(options: typeof loaderOptions) { loaderOptions = options; }
+					async reload() {}
+				},
+				SessionManager: { inMemory: () => ({}) },
+				resolveCliModel: () => ({}),
+				createAgentSession: async () => ({ session: {
+					bindExtensions: async () => {}, abort: async () => {}, dispose() {},
+					extensionRunner: { hasHandlers: () => false },
+					subscribe: () => () => {}, messages: [], sessionId: "profile-skills",
+				} }),
+			} as unknown as PiCodingAgentModule) });
+			try {
+				await factory.create(launch.session);
+				assert.deepEqual(loaderOptions?.additionalSkillPaths, [skillPath]);
+				const selected = { name: "review", filePath: skillPath };
+				const ambient = { name: "ambient", filePath: path.join(root, "ambient", "SKILL.md") };
+				assert.deepEqual(loaderOptions?.skillsOverride?.({ skills: [selected, ambient] }).skills, [selected], "keep exact profile skills without reintroducing extension-discovered skills");
+			} finally { await factory.dispose(); }
 			fs.writeFileSync(skillPath, `${content}changed\n`);
 			assert.throws(() => buildInProcessChildLaunch({ sessionEnabled: false, inheritProjectContext: false, inheritGlobalContext: false, inheritSkills: false, tools: ["read"], extensions: [], cwd: process.cwd(), childAgentName: "reviewer", childIndex: 0, resolvedChildProfile: profile, host: "runner" }), /resource changed after resolution/);
 		} finally { fs.rmSync(root, { recursive: true, force: true }); }

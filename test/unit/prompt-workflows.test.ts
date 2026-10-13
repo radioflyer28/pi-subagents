@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { fileSymlinkSkip } from "../support/symlink-support.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -68,7 +69,7 @@ Project body $1
 		assert.equal(workflow?.model, "openai/gpt-5-mini");
 	});
 
-	it("discovers symlinked prompt files and skips dangling links", () => {
+	it("discovers symlinked prompt files and skips dangling links", { skip: fileSymlinkSkip }, () => {
 		const promptsDir = path.join(agentDir, "prompts");
 		writePrompt(path.join(tempDir, "dotfiles"), "linked", `---
 description: Linked prompt
